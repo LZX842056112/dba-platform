@@ -32,7 +32,8 @@ es     = ["elasticsearch[async]>=8.15,<9"]
 minio  = ["minio>=7.2"]
 redis  = ["redis[hiredis]>=5.2"]
 llm    = ["openai>=1.50", "anthropic>=0.39", "tiktoken>=0.8"]
-prod   = ["dba[mysql,mongo,milvus,es,minio,redis,llm]"]
+embedding-local = ["torch>=2.5", "sentence-transformers>=3.0"]
+prod   = ["dba[mysql,mongo,milvus,es,minio,redis,llm,embedding-local]"]
 
 [project.scripts]
 dba = "dba.cli:main"

@@ -97,9 +97,9 @@ class HashEmbedder:
 class HttpEmbedder:
     """外部向量化服务客户端。
 
-    ``url`` 为 base URL（不含路径），``path`` 为嵌入端点：自建 bge-m3 服务用 ``/embed``
-    （返回 ``{"vectors":[...]}/{ "data":[...]}``）；复用 8081 的 OpenAI 兼容服务用
-    ``/v1/embeddings``（返回 ``{"data":[{"embedding":[...]}]}``）。响应两种格式均已兼容。
+    ``url`` 为 base URL（不含路径），``path`` 为嵌入端点：本地 bge-m3 服务用 ``/embed``
+    （返回 ``{"vectors":[...]}/{ "data":[...]}``）；OpenAI 兼容服务用 ``/v1/embeddings``
+    （返回 ``{"data":[{"embedding":[...]}]}``）。响应两种格式均已兼容。
     """
 
     def __init__(

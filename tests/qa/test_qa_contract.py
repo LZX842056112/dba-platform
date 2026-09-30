@@ -22,8 +22,8 @@ def test_e_n7_sql_guard_error_single_definition() -> None:
 
 def test_e_sql_guard_error_class_defined_only_once() -> None:
     """全仓只应有一处 `class SqlGuardError` 定义（此处以模块属性同一性佐证）。"""
-    from dba_runtime.errors import SqlGuardError as A
     from dba.modules.chatbi.guard.base import SqlGuardError as B
+    from dba_runtime.errors import SqlGuardError as A
 
     assert A is B
     assert A.__module__ == "dba_runtime.errors"

@@ -80,7 +80,9 @@ async def test_reject_session_var_assignment() -> None:
 
 async def test_reject_comment_injection() -> None:
     await _raises_symbol("/*!50000 SELECT 1 */", "SQL_DANGEROUS_CONSTRUCT")
-    await _raises_symbol("SELECT /*!40001 SQL_NO_CACHE */ id FROM t_order", "SQL_DANGEROUS_CONSTRUCT")
+    await _raises_symbol(
+        "SELECT /*!40001 SQL_NO_CACHE */ id FROM t_order", "SQL_DANGEROUS_CONSTRUCT"
+    )
 
 
 async def test_reject_sleep() -> None:

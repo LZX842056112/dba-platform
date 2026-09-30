@@ -612,11 +612,21 @@ def build_container(settings: Settings) -> Container:
 
     container.set("model_router", ModelRouter())
 
-    from .capabilities.embedding import HashEmbedder, HttpEmbedder  # noqa: PLC0415
+    from .capabilities.embedding import (  # noqa: PLC0415
+        HashEmbedder,
+        HttpEmbedder,
+        LocalEmbedder,
+    )
 
     embedder: Any
     if settings.embedding_use_fake or settings.env == "test":
         embedder = HashEmbedder(dim=settings.embedding_dim)
+    elif settings.embedding_backend == "local":
+        embedder = LocalEmbedder(
+            settings.embedding_model_path,
+            dim=settings.embedding_dim,
+            device=settings.embedding_device,
+        )
     else:
         embedder = HttpEmbedder(
             settings.embedding_url,

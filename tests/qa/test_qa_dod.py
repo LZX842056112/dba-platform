@@ -22,6 +22,7 @@ from dba_runtime import (
     traced,
 )
 
+
 # ═════════════════════════════════════════════════════════════════════════
 # 收集器（自建，不复用工程师 conftest）
 # ═════════════════════════════════════════════════════════════════════════
@@ -276,7 +277,7 @@ async def test_p2_9_rollup_idempotent() -> None:
     mr = _MetricRepo()
     svc = RollupService(run_repo=_RunRepo(), metric_repo=mr)
     r1 = await svc.run(date(2026, 9, 20))
-    r2 = await svc.run(date(2026, 9, 20))
+    await svc.run(date(2026, 9, 20))  # 第二次运行：验证幂等（结果由 mr.batches 断言）
 
     assert r1.self_run_count == 1, "平台自身模块应被排除"
     assert len(mr.batches) == 2

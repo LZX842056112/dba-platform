@@ -131,7 +131,8 @@ async def check_redis() -> tuple[str, str]:
 def check_embedding() -> tuple[str, str]:
     """Embedding：POST 一条文本，验证返回 1024 维向量（真实可用性探活）。
 
-    说明：8081 的 ``/health`` 返回空 body，不能拿它做 JSON 解析；这里直接探测嵌入端点。
+    说明：健康端点返回体不一（本地服务的 /health 是 JSON、OpenAI 兼容服务是空 body），
+    故直接探测嵌入端点，不依赖 /health。
     """
     settings = get_settings()
     url = settings.embedding_url.rstrip("/") + settings.embedding_path
@@ -200,7 +201,8 @@ async def main() -> int:
         print("结果：存在「预期 ✅」组件失败 —— 请检查网络/组件状态。")
         return 1
     if pending:
-        print(f"结果：通过 {len(rows) - len(pending)}/{len(rows)}；待复验（PENDING）：{', '.join(pending)}。")
+        done = len(rows) - len(pending)
+        print(f"结果：通过 {done}/{len(rows)}；待复验（PENDING）：{', '.join(pending)}。")
     else:
         print("结果：全部组件通过 ✅")
     return 0

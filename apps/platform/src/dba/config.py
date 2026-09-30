@@ -53,11 +53,17 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_secure: bool = False
 
-    # ── 向量化服务（★ 复用 VM 上已有的 8081 服务，模型 bge-large-zh-v1.5，dim=1024）──
-    embedding_url: str = f"http://{_VM_HOST}:8081"   # base URL（不含路径）
-    embedding_path: str = "/v1/embeddings"           # OpenAI 兼容端点（自建 bge-m3 时为 "/embed"）
+    # ── 向量化服务（★ 本地 bge-m3，由 deploy/embedding_server.py 提供）──
+    embedding_url: str = "http://127.0.0.1:8100"     # base URL（本地 embedding 服务）
+    embedding_path: str = "/embed"                   # 本地服务端点
     embedding_dim: int = 1024
-    embedding_model: str = "bge-large-zh-v1.5"
+    embedding_model: str = "bge-m3"
+    #: embedding 后端：local=进程内加载本地模型；http=调用外部服务（embedding_url）
+    embedding_backend: Literal["local", "http"] = "local"
+    #: 本地模型路径（backend=local 时生效）
+    embedding_model_path: str = "D:/cache/modelscope/hub/models/BAAI/bge-m3"
+    #: 推理设备（cpu / cuda）
+    embedding_device: str = "cpu"
     #: 为 True 时用确定性 HashEmbedder（离线/单测），不访问外部向量服务
     embedding_use_fake: bool = False
 
@@ -150,7 +156,7 @@ class Settings(BaseSettings):
             "milvus": (self.milvus_host, self.milvus_port),
             "elasticsearch": _host_port(self.es_url, default=(_VM_HOST, 9200)),
             "minio": _host_port(self.minio_endpoint, default=(_VM_HOST, 9000)),
-            "embedding": _host_port(self.embedding_url, default=(_VM_HOST, 8081)),
+            "embedding": _host_port(self.embedding_url, default=("127.0.0.1", 8100)),
         }
 
 
