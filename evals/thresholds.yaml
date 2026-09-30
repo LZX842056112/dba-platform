@@ -1,0 +1,28 @@
+# evals/thresholds.yaml —— CI 门槛（§12.4）。不达标直接 fail，不允许「先合了再说」。
+#
+# 键名约定（见 dba.evals.thresholds）：
+#   * 以 _max / _ms / _allowed 结尾 → 上界（actual ≤ threshold）
+#   * 其余                          → 下界（actual ≥ threshold）
+chatbi:
+  execution_accuracy:
+    overall:      0.80
+    single_table: 0.90
+    multi_join:   0.70      # 已知最难，单独定档而不是拉低总体
+    time_compare: 0.85
+    permission_boundary: 1.00   # ★ 权限边界题必须全绿（deny 与 empty 必须区分）
+  caliber_hit_rate: 0.90
+  latency:
+    first_panel_p90_ms: 3000
+    e2e_p90_ms: 20000
+  cost_per_question_micro_usd_max: 120000
+security:
+  scope_adversarial_pass_rate: 1.00        # 安全红线，必须全绿且不允许 flaky 重跑
+  readonly_guard_pass_rate: 1.00
+finops:
+  reconciliation_error_max: 0.01           # 明细 / 聚合 / 账单三方误差
+  pricing_coverage_min: 0.98               # 计价覆盖率
+  reserve_oversell_allowed: 0              # 并发 200 次预留
+observability:
+  anomaly_precision_min: 0.70
+  anomaly_recall_min: 0.80
+  silent_failure_detect: true

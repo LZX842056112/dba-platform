@@ -1,0 +1,25 @@
+:root {
+  /* 设计令牌（§9.1：不引重型 UI 框架，大屏需自定义视觉） */
+  --color-bg: #0b1020;
+  --color-surface: #141a2e;
+  --color-surface-2: #1b2340;
+  --color-border: #2a3355;
+  --color-text: #e8ecf7;
+  --color-text-dim: #9aa4c4;
+  --color-primary: #4f8cff;
+  --color-success: #2fbf71;
+  --color-warning: #f2b230;
+  --color-danger: #ef5350;
+  --color-info: #38bdf8;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', sans-serif;
+}
