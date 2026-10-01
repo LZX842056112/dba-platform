@@ -9,7 +9,7 @@
 //   ② onEvents 每次变化都重复注册同一批 handler → 一次点击触发 N 次回调。
 //   正确做法：记录本次绑定的 **(event, fn) 对**，按对精确解绑。
 
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { DBA_DARK_THEME_NAME, echarts, type EChartsCoreOption } from '../../lib/echarts';
 
 type EChartsInstance = ReturnType<typeof echarts.init>;
@@ -24,7 +24,7 @@ interface Props {
   theme?: string;
 }
 
-export function EchartsBase({
+function EchartsBaseImpl({
   option,
   height = '100%',
   onEvents,
@@ -72,3 +72,6 @@ export function EchartsBase({
     />
   );
 }
+
+// ★ memo：option 引用稳定时跳过整棵子树重渲染与 setOption（流式/轮询场景收益明显）
+export const EchartsBase = memo(EchartsBaseImpl);

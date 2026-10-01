@@ -5,6 +5,7 @@
 //   * 无 `layout`（delta 先到、ready 未到）→ 按面板到达顺序自动流式排布（每行 2 个），
 //     保证「逐面板渲染」的感知延迟收益不被「等布局」抹掉。
 
+import { memo } from 'react';
 import type { DataSource, Layout, PanelSpec } from '../../../types/dashboard';
 import { PanelRenderer } from './PanelRenderer';
 import { resolvePanelRows } from '../selectors';
@@ -15,7 +16,7 @@ interface Props {
   dataSources: Record<string, DataSource>;
 }
 
-export function DashboardGrid({ panels, layout, dataSources }: Props) {
+function DashboardGridImpl({ panels, layout, dataSources }: Props) {
   if (panels.length === 0) {
     return <div className="dim">暂无面板，等待出图…</div>;
   }
@@ -53,3 +54,6 @@ export function DashboardGrid({ panels, layout, dataSources }: Props) {
     </div>
   );
 }
+
+// ★ memo：流式 ``spec.delta`` 每来一个面板不应全量重渲染已渲染面板
+export const DashboardGrid = memo(DashboardGridImpl);

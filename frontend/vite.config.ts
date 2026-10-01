@@ -19,5 +19,14 @@ export default defineConfig({
     sourcemap: false,
     // ECharts 按需注册后主包明显变小（见 src/lib/echarts.ts）
     chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        // 拆 vendor：react 生态与 echarts 各自成包，利于缓存与并行加载
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom', '@tanstack/react-query', 'zustand'],
+          echarts: ['echarts'],
+        },
+      },
+    },
   },
 });
