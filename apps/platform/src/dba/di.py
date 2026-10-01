@@ -661,6 +661,23 @@ def _build_outbox_handlers(
                 row = _filter_columns(payload, mysql_models.Run)
                 row.pop("trace_id", None)
                 row.pop("started_at", None)
+                # ★ R1：回填 run 汇总（tokens / cost / llm_calls）。
+                #   llm_call 事件在流水线期间入队、finish 在 finally 入队 → outbox 按 id
+                #   顺序投递，llm_call 先落库，此处聚合可读到；偶发读不到则保持 0，
+                #   由下一次 rollup 重算兜底，不把埋点失败升级成 Run 失败。
+                try:
+                    agg = await repos.llm_call.aggregate_by_trace(trace_id)
+                    row.update(
+                        {
+                            "tokens_in": agg["tokens_in"],
+                            "tokens_out": agg["tokens_out"],
+                            "cached_tokens": agg["cached_tokens"],
+                            "cost_micro_usd": agg["cost_micro_usd"],
+                            "llm_calls": agg["llm_calls"],
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - 回填失败不影响收尾
+                    logger.warning("run 汇总回填失败（保持 0，下次 rollup 重算）：%s", exc)
                 await repos.run.finish(trace_id, started_at=payload.get("started_at"), row=row)
             else:
                 await repos.run.insert(_filter_columns(payload, mysql_models.Run))
@@ -960,7 +977,10 @@ def build_container(settings: Settings) -> Container:
     if bundle.repos is not None:
         from .capabilities.budget import GuardrailPolicy  # noqa: PLC0415
         from .modules.finops import build_finops  # noqa: PLC0415
-        from .modules.finops.sources import build_coverage_source  # noqa: PLC0415
+        from .modules.finops.sources import (  # noqa: PLC0415
+            build_coverage_source,
+            build_detail_source,
+        )
 
         finops = build_finops(
             observability=observability_service,
@@ -969,6 +989,7 @@ def build_container(settings: Settings) -> Container:
             alert_repo=bundle.repos.alert_event,
             cost_normalizer=container.get("cost_normalizer"),
             coverage_source=build_coverage_source(bundle.repos),
+            detail_source=build_detail_source(bundle.repos),
             policy=GuardrailPolicy.from_dict(settings.guardrail_policy()),
         )
         container.set("finops", finops)

@@ -3,16 +3,16 @@
 对齐《设计方案 v2》§6.5 与《实现要点清单》U10：FinOps 只读服务不直连其它模块的表，
 所需数据经 ``source`` 注入（owner 边界的实现）。
 
-★ 当前覆盖：``coverage_source``（计价覆盖率）。``detail_source``（trace 归因）与
-``curve_source``（复用率曲线）依赖 ``llm_call.skill_key`` 与 ``metric_daily`` 的聚合，
-数据尚未稳定（skill_usage 为 0），故暂以空态诚实呈现，待数据链路补齐后再接线。
+★ 覆盖：``coverage_source``（计价覆盖率）、``detail_source``（trace 四维归因）。
+``curve_source``（复用率曲线）依赖 ``skill_usage``，该表为 0 且无生产写入方，
+故暂以空态诚实呈现，待数据链路补齐后再接线。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["build_coverage_source"]
+__all__ = ["build_coverage_source", "build_detail_source"]
 
 
 def build_coverage_source(repos: Any) -> Any:
@@ -33,3 +33,21 @@ def build_coverage_source(repos: Any) -> Any:
         }
 
     return coverage
+
+
+def build_detail_source(repos: Any) -> Any:
+    """trace 四维归因数据源：带 ``by_trace`` / ``range`` 方法的对象。
+
+    供 ``CostAttributor`` 使用：``by_trace`` 是归因主路径，``range`` 服务于价格重算
+    （llm_call 无时间戳列，``range`` 诚实退回全量，见 ``LlmCallRepo.range`` 注释）。
+    """
+
+    class _DetailSource:
+        async def by_trace(self, trace_id: str) -> list[dict[str, Any]]:
+            return list(await repos.llm_call.by_trace(trace_id))
+
+        async def range(self, start: Any, end: Any) -> list[dict[str, Any]]:
+            return list(await repos.llm_call.range(start, end))
+
+    return _DetailSource()
+

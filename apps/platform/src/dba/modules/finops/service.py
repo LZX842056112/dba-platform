@@ -199,12 +199,35 @@ class FinopsService:
     async def budget_usage(self, budget_id: int, period_start: Any | None = None) -> dict[str, Any]:
         """``GET /finops/budgets/{id}/usage``。
 
-        ★ 只读预算用量应经 L4 ``BudgetGuard``——本服务保留入口，实际数据由
-        ``BudgetService``（owner=capabilities.budget）提供。此处返回入口占位结构，
-        由 API 层注入具体 budget repo 后填充（见报告遗留问题）。
+        ★ 只读预算用量经 L4 ``BudgetService``（owner=capabilities.budget）：按 id 取生效预算
+        → ``snapshot`` 读权威用量快照，返回真实 ``consumed/reserved/remaining``。
         """
-        _ = (budget_id, period_start)
-        return {"consumed": 0, "reserved": 0, "remaining": 0, "breaker_state": "CLOSED"}
+        _ = period_start
+        empty = {"consumed": 0, "reserved": 0, "remaining": 0, "breaker_state": "CLOSED"}
+        if self._budget is None:
+            return empty
+        try:
+            effective = await self._budget.resolve_by_id(budget_id)
+        except Exception as exc:  # noqa: BLE001 - 只读端点，失败降级为诚实空态
+            logger.warning("预算解析失败（降级为空态）：%s", exc)
+            return empty
+        if effective is None:
+            return {**empty, "note": "预算不存在"}
+        try:
+            snap = await self._budget.snapshot(effective)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("预算快照失败（降级为空态）：%s", exc)
+            return empty
+        consumed = int(snap["consumed_micro_usd"])
+        reserved = int(snap["reserved_micro_usd"])
+        return {
+            "consumed": consumed,
+            "reserved": reserved,
+            "remaining": max(0, effective.amount_micro_usd - consumed - reserved),
+            "breaker_state": str(snap.get("breaker_state", "CLOSED")),
+            "amount_micro_usd": effective.amount_micro_usd,
+            "used_pct": int(snap.get("used_pct", 0)),
+        }
 
     # ── 护栏策略（U26：进程内最小实现）─────────────────────────────
     async def guardrail_policy(self) -> dict[str, Any]:

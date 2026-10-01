@@ -284,6 +284,56 @@ class LlmCallRepo(_Repo):
         result = await self._execute(sa.insert(m.LlmCall), many=rows)
         return int(result.rowcount or 0)
 
+    async def aggregate_by_trace(self, trace_id: str) -> dict[str, int]:
+        """按 trace 聚合 tokens / cost / 调用数（供 run finish 回填汇总字段）。
+
+        ★ ``llm_call`` 事件在流水线期间入队、run finish 在 finally 入队，outbox 按 id
+        顺序投递 → llm_call 先落库，finish 再聚合（可读到）。若仍偶发读不到，
+        返回全 0（上层不报错，等下一次 rollup 重算）。
+        """
+        row = await self._fetch_one(
+            sa.select(
+                sa.func.coalesce(sa.func.sum(m.LlmCall.prompt_tokens), 0).label("tokens_in"),
+                sa.func.coalesce(sa.func.sum(m.LlmCall.completion_tokens), 0).label("tokens_out"),
+                sa.func.coalesce(sa.func.sum(m.LlmCall.cached_tokens), 0).label("cached_tokens"),
+                sa.func.coalesce(sa.func.sum(m.LlmCall.cost_micro_usd), 0).label("cost_micro_usd"),
+                sa.func.count().label("llm_calls"),
+            ).where(m.LlmCall.trace_id == trace_id)
+        )
+        if row is None:
+            return {
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cached_tokens": 0,
+                "cost_micro_usd": 0,
+                "llm_calls": 0,
+            }
+        return {
+            "tokens_in": int(row["tokens_in"] or 0),
+            "tokens_out": int(row["tokens_out"] or 0),
+            "cached_tokens": int(row["cached_tokens"] or 0),
+            "cost_micro_usd": int(row["cost_micro_usd"] or 0),
+            "llm_calls": int(row["llm_calls"] or 0),
+        }
+
+    async def by_trace(self, trace_id: str) -> list[Row]:
+        """四维归因主路径：按 trace 取明细（含模型/成本/token 明细）。"""
+        stmt = (
+            sa.select(m.LlmCall.__table__)
+            .where(m.LlmCall.trace_id == trace_id)
+            .order_by(m.LlmCall.id.asc())
+        )
+        return await self._fetch(stmt)
+
+    async def range(self, start: Any, end: Any) -> list[Row]:
+        """按时间窗取明细（供 ``recompute``）。
+
+        ★ ``llm_call`` 无时间戳列 → 退回全量（诚实标注，不假装时间窗）。
+        ``by_trace`` 是归因主路径，本方法仅服务于价格重算（worker job）。
+        """
+        _ = (start, end)
+        return await self._fetch(sa.select(m.LlmCall.__table__).order_by(m.LlmCall.id.asc()))
+
     async def coverage_stats(self, biz_line_id: int | None = None) -> dict[str, Any]:
         """计价覆盖率统计：priced 判定 = 命中价格表（``price_book_id`` 非空）。
 

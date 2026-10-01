@@ -124,8 +124,21 @@ class RollupService:
             b["llm_calls"] += int(run.get("llm_calls") or 0)
             b["tool_calls"] += tool_calls
 
+        # ★ P1-1 修复：技能/记忆指标须**并入**全局 bucket，而非另起一行。
+        #   ``_metric_rows`` 返回的全局行主键与「biz_line_id=0 的 run bucket」相同
+        #   ``(0, '', '')``，若直接 append，后写的 skill 行会在 ON DUPLICATE KEY UPDATE
+        #   里把 run_count/cost/tokens 覆盖成 0（实测：metric_daily.cost 恒 0 的根因）。
+        for extra in await self._metric_rows(stat_date, biz_line_id):
+            gkey = (
+                int(extra.get("biz_line_id") or 0),
+                str(extra.get("agent_uid") or ""),
+                str(extra.get("model") or ""),
+            )
+            for col, val in extra.items():
+                if col not in {"stat_date", "biz_line_id", "agent_uid", "model"}:
+                    buckets[gkey][col] = val
+
         rows = [self._to_row(stat_date, key, b) for key, b in buckets.items()]
-        rows.extend(await self._metric_rows(stat_date, biz_line_id))
 
         if self._metric_repo is not None and rows:
             await self._metric_repo.upsert_many(rows)
@@ -164,7 +177,7 @@ class RollupService:
         avg_latency = (b["latency_sum"] // run_count) if run_count else None
         # ★ 只放 metric_daily 真实存在的列：``llm_calls``/``tool_calls`` 不属于本表
         #   （它们只用于上面判定静默失败），带进来会因「未知列」导致 upsert 全表失败。
-        return {
+        row: dict[str, Any] = {
             "stat_date": stat_date,
             "biz_line_id": biz_line_id,
             "agent_uid": agent_uid,
@@ -180,6 +193,19 @@ class RollupService:
             "cost_micro_usd": b["cost_micro_usd"],
             "avg_latency_ms": avg_latency,
         }
+        # ★ 并入全局 bucket 的技能/记忆指标列（仅全局行携带；其余 bucket 无此键，不写）
+        for col in (
+            "skill_total",
+            "skill_used",
+            "skill_reuse_rate",
+            "dead_skill_count",
+            "mem_lookup",
+            "mem_hit",
+            "mem_hit_rate",
+        ):
+            if col in b:
+                row[col] = b[col]
+        return row
 
     async def _metric_rows(self, stat_date: date, biz_line_id: int | None) -> list[dict[str, Any]]:
         """技能 / 记忆指标行（挂到 ``(biz_line_id, '', '')`` 全局维度）。"""

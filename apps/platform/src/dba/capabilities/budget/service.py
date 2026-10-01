@@ -209,6 +209,21 @@ class BudgetService:
                 return budget
         return None
 
+    async def resolve_by_id(
+        self, budget_id: int, *, at: dt.datetime | None = None
+    ) -> EffectiveBudget | None:
+        """按主键取生效预算（供只读端点 ``/finops/budgets/{id}/usage`` 使用）。
+
+        ★ 直接用 id 定位（而非 ``resolve`` 的 scope 匹配），因为该端点按 id 寻址。
+        """
+        row = await self._budgets.by_id(budget_id)
+        if row is None:
+            return None
+        tz = str(row.get("timezone", "Asia/Shanghai"))
+        period = str(row.get("period", "MONTH"))
+        start = self.period_start(period, at, tz)
+        return EffectiveBudget.from_row(row, start)
+
     # ── 预估 ────────────────────────────────────────────────────────
     def estimate(
         self,
