@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from .anomaly import SELF_MODULES
@@ -240,12 +240,6 @@ class ObservabilityService:
             return {"nodes": [], "edges": []}
         graph = await self._topology.build(biz_line_id)
         return dict(graph.as_dict())
-
-    @staticmethod
-    def default_window(hours: int = 24) -> tuple[datetime, datetime]:
-        """默认窗口（近 N 小时，UTC naive——与 MySQL DATETIME 一致）。"""
-        until = datetime.now(UTC).replace(tzinfo=None)
-        return until - timedelta(hours=hours), until
 
 
 def _top_agents(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:

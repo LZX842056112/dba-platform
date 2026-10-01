@@ -23,7 +23,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .guardrail import GuardrailPolicy
+from dba.capabilities.budget import GuardrailPolicy
 
 __all__ = ["FinopsService"]
 

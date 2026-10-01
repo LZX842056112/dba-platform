@@ -21,8 +21,6 @@ v2 修法：**可计费输入 = prompt_tokens − cached_tokens**（下限 0）�
 
 from __future__ import annotations
 
-from typing import Any
-
 from dba_runtime.telemetry import LLMCallRecord, NormalizedCost
 
 from .price_cache import PriceCache, PriceRow
@@ -114,21 +112,3 @@ class CostNormalizer:
             fx_rate_to_usd=price.fx_rate_to_usd,
             unknown_price=False,
         )
-
-    def explain(self, rec: LLMCallRecord) -> dict[str, Any]:
-        """返回计费明细（供 ``sql_audit`` / 排障展示，含 ``billable_input_tokens``）。"""
-        prompt = int(rec.get("prompt_tokens", 0) or 0)
-        cached = int(rec.get("cached_tokens", 0) or 0)
-        cost = self.normalize(rec)
-        return {
-            "prompt_tokens": prompt,
-            "cached_tokens": cached,
-            "billable_input_tokens": billable_input_tokens(prompt, cached),
-            "completion_tokens": int(rec.get("completion_tokens", 0) or 0),
-            "input_micro_usd": cost.input_micro_usd,
-            "cached_micro_usd": cost.cached_micro_usd,
-            "output_micro_usd": cost.output_micro_usd,
-            "total_micro_usd": cost.total_micro_usd,
-            "price_book_id": cost.price_book_id,
-            "unknown_price": cost.unknown_price,
-        }

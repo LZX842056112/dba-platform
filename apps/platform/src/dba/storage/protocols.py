@@ -17,8 +17,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from dba_runtime.tools.sql_tool import ExecMeta
-
 __all__ = [
     "Row",
     "PROTOCOL_OWNERS",
@@ -594,4 +592,3 @@ def _protocol_owners() -> dict[str, str]:
 
 
 PROTOCOL_OWNERS: dict[str, str] = _protocol_owners()
-_ = ExecMeta  # 供类型引用，避免未使用告警

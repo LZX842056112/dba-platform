@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from dba_runtime.registry import AgentRegistry
@@ -178,9 +177,3 @@ def _make_silent_loader(run_repo: Any) -> Any:
         return out
 
     return _load
-
-
-def _default_window(hours: int = 24) -> tuple[datetime, datetime]:
-    """预览用默认窗口（近 N 小时，UTC naive）。"""
-    until = datetime.now(UTC).replace(tzinfo=None)
-    return until - timedelta(hours=hours), until

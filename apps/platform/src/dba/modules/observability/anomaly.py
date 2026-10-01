@@ -264,13 +264,6 @@ class AnomalyDetector:
         mad = statistics.median([abs(x - median) for x in hist])
         return base, mad
 
-    def robust_z(self, series: Series) -> float:
-        """稳健偏差 ``z``；序列无波动（MAD=0）时返回 0.0（不判异常）。"""
-        base, mad = self.baseline(series.values)
-        if mad <= 0:
-            return 0.0
-        return MAD_SIGN * (series.latest - base) / mad
-
     def attribute(self, series: Series) -> Attribution:
         """★ 自主归因：按 model / agent / skill 三维拆解增量，取贡献最大的前几项。"""
         by_model = self._rank(series.breakdown.get("model", {}), key_name="model")

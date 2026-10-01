@@ -35,7 +35,6 @@ from typing import Any, cast
 import sqlalchemy as sa
 from dba_runtime.errors import StorageUnavailableError
 from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.exc import IntegrityError
 
 from . import models as m
 
@@ -1083,6 +1082,3 @@ class MysqlRepositories:
         self.alert_event = AlertEventRepo(engine)
         self.metric_daily = MetricDailyRepo(engine)
         self.sql_audit = SqlAuditRepo(engine)
-
-
-_ = IntegrityError  # 供将来冲突重试使用，避免未使用告警

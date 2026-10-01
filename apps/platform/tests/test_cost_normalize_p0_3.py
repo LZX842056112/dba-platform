@@ -74,7 +74,7 @@ def test_normalize_unknown_price_not_silently_zero() -> None:
     assert cost.price_book_id is None
 
 
-def test_explain_exposes_billable_input() -> None:
+def test_normalize_billable_input_not_double_billed() -> None:
     cache = PriceCache()
     normalizer = CostNormalizer(cache, default_provider="openai")
     normalizer._prices.load_rows(  # noqa: SLF001 - 测试注入
@@ -94,16 +94,17 @@ def test_explain_exposes_billable_input() -> None:
             }
         ]
     )
-    detail = normalizer.explain(
-        {
-            "provider": "openai",
-            "model": "gpt-4o",
-            "prompt_tokens": 1000,
-            "cached_tokens": 600,
-            "completion_tokens": 200,
-        }  # type: ignore[arg-type]
-    )
-    assert detail["billable_input_tokens"] == 400
-    assert detail["cached_micro_usd"] == 750
-    assert detail["output_micro_usd"] == 2000  # 200 * 10000 / 1000
-    assert detail["total_micro_usd"] == 1000 + 750 + 2000
+    rec = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "prompt_tokens": 1000,
+        "cached_tokens": 600,
+        "completion_tokens": 200,
+    }
+    cost = normalizer.normalize(rec)  # type: ignore[arg-type]
+    # 可计费输入 = 1000 - 600 = 400，缓存 600 token 按缓存读价单独计，不重复计费
+    assert billable_input_tokens(1000, 600) == 400
+    assert cost.input_micro_usd == 1000  # 400 * 2500 / 1000
+    assert cost.cached_micro_usd == 750  # 600 * 1250 / 1000
+    assert cost.output_micro_usd == 2000  # 200 * 10000 / 1000
+    assert cost.total_micro_usd == 1000 + 750 + 2000

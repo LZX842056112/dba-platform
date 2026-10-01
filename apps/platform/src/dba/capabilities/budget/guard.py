@@ -50,11 +50,6 @@ class GuardrailPolicy:
         kwargs = {k: v for k, v in data.items() if k in fields}
         return cls(**kwargs)
 
-    @property
-    def is_fail_open(self) -> bool:
-        """Redis 不可用时是否 fail-open 到 MySQL 原子路径（§6.5 / P1-9）。"""
-        return self.degrade_policy == "fail_open_mysql"
-
     def allowed_soft_actions(self) -> tuple[str, ...]:
         """当前策略下**允许**执行的软限动作集合。"""
         actions: list[str] = ["ALERT"]
@@ -65,11 +60,3 @@ class GuardrailPolicy:
         if self.allow_rate_limit:
             actions.append("RATE_LIMIT")
         return tuple(actions)
-
-    def allows_hard_action(self, action: str) -> bool:
-        """硬限动作是否被允许（``CIRCUIT_BREAK`` 默认关闭）。"""
-        if action == "CIRCUIT_BREAK":
-            return self.allow_circuit_break
-        if action == "BLOCK":
-            return True
-        return False

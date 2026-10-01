@@ -40,7 +40,7 @@ from dba_runtime import BudgetDecision, BudgetExceededError, RunContext
 #   本模块**复用**它而不是另起一个同名类（N 系列一致性：同一语义只有一个定义）。
 from dba.capabilities.budget import GuardrailPolicy
 
-__all__ = ["GuardrailPolicy", "BudgetGuardAgent"]
+__all__ = ["BudgetGuardAgent"]
 
 logger = logging.getLogger("dba.modules.finops.guardrail")
 

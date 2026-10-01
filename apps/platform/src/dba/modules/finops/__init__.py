@@ -21,13 +21,14 @@ from typing import Any
 
 from dba_runtime.registry import AgentRegistry
 
+from dba.capabilities.budget import GuardrailPolicy
+
 from .agents import register_finops_agents
 from .agents.attribute import AttributeAgent, CostAttributor
 from .agents.guard import BudgetGuardAgent
 from .agents.meter import MeterAgent
 from .agents.optimize import OptimizeAgent
 from .cost_curve import CostCurveAnalyzer
-from .guardrail import GuardrailPolicy
 from .loop_detector import InMemoryLoopCounter, LoopCounter, LoopDetector
 from .pipeline import FINOPS_STEPS, build_finops_pipeline
 from .service import FinopsService
