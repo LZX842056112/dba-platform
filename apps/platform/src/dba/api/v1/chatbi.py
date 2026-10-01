@@ -346,6 +346,31 @@ def _answer_text(output: dict[str, Any]) -> str:
     return json.dumps(output, ensure_ascii=False, default=str)[:2000]
 
 
+async def _persist_dashboard_spec(mongo: Any, output: dict[str, Any]) -> None:
+    """把流水线产出的大屏 spec 落库（best-effort）。
+
+    ★ 为什么必须落库：前端的数据源只走
+    ``useDashboardHydration → GET /dashboards/{id}``；SSE 的 ``dashboard.spec.delta``
+    只带面板骨架、**不带行数据**。不落库 → 图表恒显示「暂无数据」。
+
+    失败只告警、不影响 Run 结论（与 ``_append_message`` 同风格）。
+    """
+    if mongo is None:
+        return
+    spec = output.get("dashboard_spec")
+    if not isinstance(spec, dict) or not spec.get("dashboard_id"):
+        return
+    try:
+        # ★ 归一化：SQL 结果里含 ``datetime.date`` / ``Decimal`` 等 BSON 不支持的类型，
+        #   必须先 JSON 往返转成字符串（与 ``spec_builder.materialize`` 的 s3 路径同法），
+        #   否则 MongoDB 会以 "cannot encode object: datetime.date(...)" 拒绝写入。
+        safe = json.loads(json.dumps(spec, ensure_ascii=False, default=str))
+        version = await mongo.dashboard_spec.save_new_version(safe)
+        logger.info("大屏 spec 已落库：%s v%s", safe.get("dashboard_id"), version)
+    except Exception as exc:  # noqa: BLE001 - 落库失败不应影响 Run
+        logger.warning("大屏 spec 落库失败：%s", exc)
+
+
 async def _run_bg(
     container: Container,
     pipeline: Any,
@@ -370,12 +395,17 @@ async def _run_bg(
     await _append_message(mongo, session_id, ctx.trace_id, "user", question)
     try:
         result = await pipeline.execute(payload, ctx, emitter)
+        await _append_message(
+            mongo, session_id, ctx.trace_id, "assistant", _answer_text(result.output)
+        )
+        # ★ 顺序至关重要：**先落库、再发 run.finished**。
+        #   前端在收到终态后才回拉大屏数据（useDashboardHydration 以 status==='done'
+        #   为门槛）。若先发事件，客户端会抢在落库完成前请求 → 拿到空 spec →
+        #   图表恒显示「暂无数据（数据源未内联）」（实测竞态）。
+        await _persist_dashboard_spec(mongo, result.output)
         await emitter.emit(
             "run.finished",
             {"status": result.status, "steps_run": result.steps_run, "retries": result.retries},
-        )
-        await _append_message(
-            mongo, session_id, ctx.trace_id, "assistant", _answer_text(result.output)
         )
     except Exception as exc:  # noqa: BLE001 - 后台任务必须自行兜底（否则静默丢失）
         logger.exception("ChatBI 后台 Run 失败：%s", exc)

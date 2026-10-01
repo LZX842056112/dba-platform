@@ -60,9 +60,7 @@ async def env(mysql_dsn: str):  # type: ignore[no-untyped-def]
 
 
 async def _resolve(svc, scope: str):  # type: ignore[no-untyped-def]
-    return await svc.resolve(
-        "GLOBAL", scope, "MONTH", at=dt.datetime(2026, 9, 15, tzinfo=dt.UTC)
-    )
+    return await svc.resolve("GLOBAL", scope, "MONTH", at=dt.datetime(2026, 9, 15, tzinfo=dt.UTC))
 
 
 async def test_p0_4_settle_and_release_idempotent_triple(env) -> None:  # type: ignore[no-untyped-def]

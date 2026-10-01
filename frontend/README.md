@@ -64,10 +64,14 @@ npm run gen:api      # 由后端 OpenAPI 生成 src/types/api.d.ts（U27）
    - ⚠️ 后端以**命名事件**（`event: run.started`）推送，故客户端对每个事件名 `addEventListener`，**不能用 `onmessage`**。
    - 信封的 `seq` 取自 SSE 的 `id:` 字段；浏览器据此自动带 `Last-Event-ID` 续传；`runStore` 用 `seq` 幂等去重。
 3. `runStore.apply(event)` 分派：`run.started` 重置、`agent.step.*` 进度、`sql.*`/自愈提示、`dashboard.spec.delta` 按 `panel_id` upsert、`dashboard.spec.ready` 锁定布局。
-4. `dashboard.spec.ready` 后按 `dashboard_id` 回拉整份大屏 JSON 补全 `data_sources`（面板只带 `dataset.ref`）。
+4. 收到 `run.finished`（`status === 'done'`）后按 `dashboard_id` 回拉整份大屏 JSON 补全 `data_sources`
+   （面板只带 `dataset.ref`）。★ 门槛用终态而非 `dashboard.spec.ready`：后者在流水线中途就到达，
+   此时后端尚未落库 → 会拿到空 spec → 图表恒「暂无数据」。
 
 ## 未实现 / 未验证（如实标注）
 
 - **未实现（P2）**：观测页、FinOps 页、语义管理页、技能页；`mode='s3'` 数据源的前端预签名直拉（§9.5 硬约定 2）。
-- **未验证**：真实浏览器下的 SSE 长连接、断线重连、ECharts 实际渲染效果（CI 仅能保证类型检查与打包通过）。
+- **已验证（真实浏览器）**：登录（含错误口令）、提问 → 七步进度 → SQL 折叠 → ECharts 真实渲染，
+  由 `tests/e2e/browser/run_browser_e2e.sh` 用真 Chrome 断言（见该目录 README）。
+  **仍未验证**：SSE 断线重连（`Last-Event-ID`，需人为断网）、长连接下的内存行为。
 - `run.finished` 的 `usage` 字段：后端当前下发 `{status, steps_run, retries}`，成本展示为可选；不一致处已在 `types/events.ts` 标注。

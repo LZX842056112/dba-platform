@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import os
 import sys
@@ -32,6 +33,7 @@ from dba.storage.mysql.models import (
     SemMetric,
     SkillRegistry,
 )
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 DEFAULT_DSN = os.environ.get(
     "DBA_MYSQL_DSN",
@@ -47,6 +49,124 @@ def _now() -> dt.datetime:
 #: ★ 价格表生效时间用**固定值**（不能用 ``now``）——否则每次 seed 的
 #: ``effective_from`` 都不同，按 (provider, model, effective_from) 去重会失效、重复灌入。
 _SEED_EFFECTIVE_FROM = dt.datetime(2026, 1, 1, 0, 0, 0)
+
+
+def _hash(password: str) -> str:
+    """口令哈希：与 ``api/v1/auth.py::_verify_password`` 对齐（sha256 十六进制）。
+
+    ★ 不能用 bcrypt：``_verify_password`` 只认 ``sha256hex`` 或明文，
+    写 bcrypt 会导致登录**必然失败**。
+    """
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+#: 演示账号（本地联调用；口令见 README。生产必须改）
+DEMO_USERS: tuple[dict, ...] = (
+    {
+        "id": 1,
+        "username": "admin",
+        "password": "admin123",
+        "display_name": "演示管理员",
+        "email": "admin@example.com",
+        "biz_line_id": None,
+        "role_id": 1,
+    },
+    {
+        "id": 2,
+        "username": "analyst1",
+        "password": "analyst123",
+        "display_name": "演示分析师",
+        "email": "analyst1@example.com",
+        "biz_line_id": 1,
+        "role_id": 2,
+    },
+)
+
+
+#: ``fact_sales`` 演示事实表 —— 列名必须与 ``di.py`` 的 DemoLLM 固定 SQL 对齐
+#: （``SELECT dt, SUM(gmv_ex_tax) ... FROM fact_sales``）。
+_FACT_SALES_DDL = """
+CREATE TABLE IF NOT EXISTS fact_sales (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  dt          DATE            NOT NULL,
+  region_code VARCHAR(16)     NOT NULL,
+  channel     VARCHAR(16)     NOT NULL,
+  order_cnt   INT             NOT NULL DEFAULT 0,
+  gmv_ex_tax  DECIMAL(18,2)   NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_dt_region_channel (dt, region_code, channel),
+  KEY idx_dt (dt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+async def _upsert_users(conn: sa.ext.asyncio.AsyncConnection, now: dt.datetime) -> int:
+    """按 ``username`` upsert 演示用户（★ 必须 upsert，不能只 insert）。
+
+    ``_insert_missing`` 对已存在的 ``admin`` 会**跳过**，导致老的假 bcrypt 口令
+    永远修不掉、登录恒失败。这里走 ``ON DUPLICATE KEY UPDATE`` 强制刷新口令。
+    """
+    affected = 0
+    for u in DEMO_USERS:
+        row = {
+            "id": u["id"],
+            "username": u["username"],
+            "password_hash": _hash(u["password"]),
+            "display_name": u["display_name"],
+            "email": u["email"],
+            "biz_line_id": u["biz_line_id"],
+            "status": 1,
+            "created_at": now,
+        }
+        await conn.execute(
+            mysql_insert(AuthUser.__table__)
+            .values(**row)
+            .on_duplicate_key_update(
+                password_hash=row["password_hash"],
+                display_name=row["display_name"],
+                email=row["email"],
+                biz_line_id=row["biz_line_id"],
+                status=1,
+                deleted_at=None,
+            )
+        )
+        affected += 1
+    return affected
+
+
+async def _seed_fact_sales(conn: sa.ext.asyncio.AsyncConnection) -> int:
+    """建 ``fact_sales`` 演示表并灌 45 天数据（★ 日期相对 ``CURDATE()``，任何时刻跑都有数）。
+
+    45 天 = DemoLLM 的 30 天窗口 + 缓冲；``ON DUPLICATE KEY UPDATE`` 保证幂等。
+    """
+    await conn.execute(sa.text(_FACT_SALES_DDL))
+    today = dt.date.today()
+    combos = (("east", "online"), ("east", "store"), ("west", "online"), ("north", "store"))
+    rows: list[dict] = []
+    for i in range(45):
+        day = today - dt.timedelta(days=i)
+        for j, (region, channel) in enumerate(combos):
+            # 确定性伪随机（按日期与组合派生）→ 反复跑结果一致，便于断言
+            base = (day.toordinal() * 7 + j * 13) % 50
+            rows.append(
+                {
+                    "dt": day,
+                    "region_code": region,
+                    "channel": channel,
+                    "order_cnt": 100 + base,
+                    "gmv_ex_tax": 10000 + base * 137,
+                }
+            )
+    await conn.execute(
+        sa.text(
+            "INSERT INTO fact_sales (dt, region_code, channel, order_cnt, gmv_ex_tax) "
+            "VALUES (:dt, :region_code, :channel, :order_cnt, :gmv_ex_tax) AS new "
+            "ON DUPLICATE KEY UPDATE order_cnt=new.order_cnt, "
+            "gmv_ex_tax=new.gmv_ex_tax"
+        ),
+        rows,
+    )
+    return len(rows)
 
 
 async def _insert_missing(
@@ -231,37 +351,16 @@ async def seed(engine: sa.ext.asyncio.AsyncEngine, *, demo: bool) -> dict[str, i
         )
 
         if demo:
-            users = [
-                {
-                    "id": 1,
-                    "username": "admin",
-                    "password_hash": "$2b$12$demo.demo.demo.demo.demo.demo.demo",
-                    "display_name": "演示管理员",
-                    "email": "admin@example.com",
-                    "biz_line_id": None,
-                    "status": 1,
-                    "created_at": now,
-                },
-                {
-                    "id": 2,
-                    "username": "analyst1",
-                    "password_hash": "$2b$12$demo.demo.demo.demo.demo.demo.demo",
-                    "display_name": "演示分析师",
-                    "email": "analyst1@example.com",
-                    "biz_line_id": 1,
-                    "status": 1,
-                    "created_at": now,
-                },
-            ]
-            counts["auth_user"] = await _insert_missing(
-                conn, AuthUser.__table__, users, ("username",)
-            )
+            # ★ 走 upsert（而非 _insert_missing）：保证已存在的 admin 也被刷新为真口令
+            counts["auth_user"] = await _upsert_users(conn, now)
             counts["auth_user_role"] = await _insert_missing(
                 conn,
                 AuthUserRole.__table__,
-                [{"user_id": 1, "role_id": 1}, {"user_id": 2, "role_id": 2}],
+                [{"user_id": u["id"], "role_id": u["role_id"]} for u in DEMO_USERS],
                 ("user_id", "role_id"),
             )
+            # ★ 演示事实表：DemoLLM 的固定 SQL 要查它，缺了主链路必然失败
+            counts["fact_sales"] = await _seed_fact_sales(conn)
             skills = [
                 {
                     "skill_key": "revenue_trend",

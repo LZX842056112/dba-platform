@@ -165,3 +165,9 @@ cython_debug/
 
 # IDE
 .idea/
+
+# 前端依赖（frontend/.gitignore 已含，此处兜底）
+node_modules/
+
+# 浏览器 e2e 产物（截图/日志，不入库）
+tests/e2e/browser/artifacts/

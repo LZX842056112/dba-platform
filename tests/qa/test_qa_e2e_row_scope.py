@@ -255,8 +255,7 @@ async def test_collision_over_exposure_leak(mysql_dsn: str) -> None:  # type: ig
 
 # ── 追加对抗用例（Round 2）：进一步压测修复 ──────────────────────────────
 _DIM_JOIN_WITH_ALIAS = (
-    f"SELECT f.id AS id, d.region AS region "
-    f"FROM {_FACT} AS f JOIN {_DIM} AS d ON f.dim_id = d.id"
+    f"SELECT f.id AS id, d.region AS region FROM {_FACT} AS f JOIN {_DIM} AS d ON f.dim_id = d.id"
 )
 
 

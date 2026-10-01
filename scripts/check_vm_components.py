@@ -136,9 +136,9 @@ def check_embedding() -> tuple[str, str]:
     """
     settings = get_settings()
     url = settings.embedding_url.rstrip("/") + settings.embedding_path
-    payload = json.dumps(
-        {"model": settings.embedding_model, "input": ["连通性探活"]}
-    ).encode("utf-8")
+    payload = json.dumps({"model": settings.embedding_model, "input": ["连通性探活"]}).encode(
+        "utf-8"
+    )
     request = urllib.request.Request(  # noqa: S310 - 内部可信地址
         url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
     )

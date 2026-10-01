@@ -38,9 +38,7 @@ class Settings(BaseSettings):
     # ── 存储（★ 外部组件已迁到虚拟机 _VM_HOST:192.168.200.10）─────────
     # 账号/密码与 deploy/vm-provision.sh 顶部变量保持一致，便于对照修改。
     mysql_dsn: str = f"mysql+asyncmy://dba_user:dba_user_pwd_2026@{_VM_HOST}:3306/dba"
-    mysql_ro_dsn: str = (
-        f"mysql+asyncmy://dba_readonly:dba_readonly_pwd_2026@{_VM_HOST}:3306/dba"
-    )
+    mysql_ro_dsn: str = f"mysql+asyncmy://dba_readonly:dba_readonly_pwd_2026@{_VM_HOST}:3306/dba"
     mongo_dsn: str = f"mongodb://{_VM_HOST}:27017"
     mongo_db: str = "dba"
     redis_dsn: str = f"redis://:960802@{_VM_HOST}:6379/0"
@@ -54,8 +52,8 @@ class Settings(BaseSettings):
     minio_secure: bool = False
 
     # ── 向量化服务（★ 本地 bge-m3，由 deploy/embedding_server.py 提供）──
-    embedding_url: str = "http://127.0.0.1:8100"     # base URL（本地 embedding 服务）
-    embedding_path: str = "/embed"                   # 本地服务端点
+    embedding_url: str = "http://127.0.0.1:8100"  # base URL（本地 embedding 服务）
+    embedding_path: str = "/embed"  # 本地服务端点
     embedding_dim: int = 1024
     embedding_model: str = "bge-m3"
     #: embedding 后端：local=进程内加载本地模型；http=调用外部服务（embedding_url）
@@ -147,17 +145,21 @@ class Settings(BaseSettings):
         """``/ready`` 探测目标：组件名 → (host, port)。
 
         硬依赖：mysql / mongodb / redis；可降级：milvus / elasticsearch / minio / embedding。
-        端点从 DSN / URL 解析（B0 用 TCP 可达性探测；B2+ 换成真实 ping）。
+
+        ★ ``embedding_backend="local"`` 时**不列入**：模型在进程内加载，
+        没有可探测的外部端点（列进去会恒报 ``TimeoutError: 127.0.0.1:8100`` → 假 degraded）。
         """
-        return {
+        components: dict[str, tuple[str, int]] = {
             "mysql": _host_port(self.mysql_dsn, default=(_VM_HOST, 3306)),
             "mongodb": _host_port(self.mongo_dsn, default=(_VM_HOST, 27017)),
             "redis": _host_port(self.redis_dsn, default=(_VM_HOST, 6379)),
             "milvus": (self.milvus_host, self.milvus_port),
             "elasticsearch": _host_port(self.es_url, default=(_VM_HOST, 9200)),
             "minio": _host_port(self.minio_endpoint, default=(_VM_HOST, 9000)),
-            "embedding": _host_port(self.embedding_url, default=("127.0.0.1", 8100)),
         }
+        if self.embedding_backend == "http":
+            components["embedding"] = _host_port(self.embedding_url, default=("127.0.0.1", 8100))
+        return components
 
 
 #: 硬依赖：只有它们全挂才返回 503，否则返回 degraded（§7.6 降级语义）

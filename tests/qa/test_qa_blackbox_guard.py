@@ -59,9 +59,7 @@ async def test_reject_into_outfile() -> None:
 
 
 async def test_reject_into_dumpfile() -> None:
-    await _raises_symbol(
-        "SELECT id FROM t_order INTO DUMPFILE '/tmp/x'", "SQL_DANGEROUS_CONSTRUCT"
-    )
+    await _raises_symbol("SELECT id FROM t_order INTO DUMPFILE '/tmp/x'", "SQL_DANGEROUS_CONSTRUCT")
 
 
 async def test_reject_for_update() -> None:
@@ -69,9 +67,7 @@ async def test_reject_for_update() -> None:
 
 
 async def test_reject_lock_in_share_mode() -> None:
-    await _raises_symbol(
-        "SELECT id FROM t_order LOCK IN SHARE MODE", "SQL_DANGEROUS_CONSTRUCT"
-    )
+    await _raises_symbol("SELECT id FROM t_order LOCK IN SHARE MODE", "SQL_DANGEROUS_CONSTRUCT")
 
 
 async def test_reject_session_var_assignment() -> None:

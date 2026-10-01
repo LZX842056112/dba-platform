@@ -176,8 +176,13 @@ def test_p0_3_cost_hand_computed() -> None:
     )
     assert billable_input_tokens(1000, 600) == 400
     cost = CostNormalizer(PriceCache()).normalize_with_price(  # type: ignore[arg-type]
-        {"provider": "openai", "model": "gpt-4o", "prompt_tokens": 1000,
-         "cached_tokens": 600, "completion_tokens": 0},  # type: ignore[arg-type]
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "prompt_tokens": 1000,
+            "cached_tokens": 600,
+            "completion_tokens": 0,
+        },  # type: ignore[arg-type]
         price,
     )
     expected = (1000 - 600) * 2500 // 1000 + 600 * 1250 // 1000 + 0
@@ -230,12 +235,30 @@ def test_cost_curve_has_hit_and_miss_groups() -> None:
     from dba.modules.finops.cost_curve import CostCurveAnalyzer, DailyPoint
 
     pts = [
-        DailyPoint(day=date(2026, 1, 1), reuse_rate=0.10, tokens_hit=1000,
-                   tokens_miss=1005, hit_samples=10, miss_samples=8),
-        DailyPoint(day=date(2026, 1, 2), reuse_rate=0.50, tokens_hit=700,
-                   tokens_miss=1000, hit_samples=12, miss_samples=9),
-        DailyPoint(day=date(2026, 1, 3), reuse_rate=0.90, tokens_hit=400,
-                   tokens_miss=990, hit_samples=11, miss_samples=7),
+        DailyPoint(
+            day=date(2026, 1, 1),
+            reuse_rate=0.10,
+            tokens_hit=1000,
+            tokens_miss=1005,
+            hit_samples=10,
+            miss_samples=8,
+        ),
+        DailyPoint(
+            day=date(2026, 1, 2),
+            reuse_rate=0.50,
+            tokens_hit=700,
+            tokens_miss=1000,
+            hit_samples=12,
+            miss_samples=9,
+        ),
+        DailyPoint(
+            day=date(2026, 1, 3),
+            reuse_rate=0.90,
+            tokens_hit=400,
+            tokens_miss=990,
+            hit_samples=11,
+            miss_samples=7,
+        ),
     ]
     data = CostCurveAnalyzer().analyze(biz_line_id=1, days=3, points=pts)
     groups = {row["group"] for row in data.token_series}
@@ -252,15 +275,45 @@ async def test_p2_9_rollup_idempotent() -> None:
     from dba.modules.observability.rollup import RollupService
 
     runs = [
-        {"module": "chatbi", "biz_line_id": 1, "agent_uid": "ag1", "status": "success",
-         "tokens_in": 100, "tokens_out": 50, "cached_tokens": 10, "cost_micro_usd": 500,
-         "latency_ms": 120, "llm_calls": 1, "tool_calls": 0},
-        {"module": "chatbi", "biz_line_id": 1, "agent_uid": "ag1", "status": "success",
-         "tokens_in": 200, "tokens_out": 60, "cached_tokens": 0, "cost_micro_usd": 700,
-         "latency_ms": 80, "llm_calls": 1, "tool_calls": 1},
-        {"module": "observability", "biz_line_id": 1, "agent_uid": "self", "status": "success",
-         "tokens_in": 9, "tokens_out": 9, "cached_tokens": 0, "cost_micro_usd": 9999,
-         "latency_ms": 10, "llm_calls": 1, "tool_calls": 0},
+        {
+            "module": "chatbi",
+            "biz_line_id": 1,
+            "agent_uid": "ag1",
+            "status": "success",
+            "tokens_in": 100,
+            "tokens_out": 50,
+            "cached_tokens": 10,
+            "cost_micro_usd": 500,
+            "latency_ms": 120,
+            "llm_calls": 1,
+            "tool_calls": 0,
+        },
+        {
+            "module": "chatbi",
+            "biz_line_id": 1,
+            "agent_uid": "ag1",
+            "status": "success",
+            "tokens_in": 200,
+            "tokens_out": 60,
+            "cached_tokens": 0,
+            "cost_micro_usd": 700,
+            "latency_ms": 80,
+            "llm_calls": 1,
+            "tool_calls": 1,
+        },
+        {
+            "module": "observability",
+            "biz_line_id": 1,
+            "agent_uid": "self",
+            "status": "success",
+            "tokens_in": 9,
+            "tokens_out": 9,
+            "cached_tokens": 0,
+            "cost_micro_usd": 9999,
+            "latency_ms": 10,
+            "llm_calls": 1,
+            "tool_calls": 0,
+        },
     ]
 
     class _RunRepo:
