@@ -375,12 +375,13 @@ class LlmCallRepo(_Repo):
         }
 
     async def cache_savings(self, biz_line_id: int | None = None) -> dict[str, Any]:
-        """prompt 缓存节省估算（``cache_hit=1`` 的 cached token × 全价-缓存读价差）。
+        """prompt 缓存节省估算（``cached_tokens>0`` 的 token × 全价-缓存读价差）。
 
-        ★ 口径：仅对 ``PER_1K_TOKEN`` 计价估算 ``saved_micro_usd``（其它 unit 保守不计）；
+        ★ 口径：以 ``cached_tokens > 0`` 为缓存命中信号（``cache_hit`` 标志位当前未落库），
+        仅对 ``PER_1K_TOKEN`` 计价估算 ``saved_micro_usd``（其它 unit 保守不计）；
         ``cached_tokens/cached_calls`` 为真实聚合值。
         """
-        conds = [m.LlmCall.cache_hit == 1]
+        conds = [m.LlmCall.cached_tokens > 0]
         if biz_line_id is not None:
             conds.append(m.LlmCall.biz_line_id == biz_line_id)
         by_price = await self._fetch(
