@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["build_coverage_source", "build_detail_source"]
+__all__ = ["build_coverage_source", "build_detail_source", "build_cache_source"]
 
 
 def build_coverage_source(repos: Any) -> Any:
@@ -50,4 +50,16 @@ def build_detail_source(repos: Any) -> Any:
             return list(await repos.llm_call.range(start, end))
 
     return _DetailSource()
+
+
+def build_cache_source(repos: Any) -> Any:
+    """prompt 缓存节省数据源：``async fn(biz_line_id) -> dict``。
+
+    返回 ``cached_tokens / cached_calls / saved_micro_usd``（估算口径，见 ``cache_savings``）。
+    """
+
+    async def cache_usage(biz_line_id: int | None = None) -> dict[str, Any]:
+        return dict(await repos.llm_call.cache_savings(biz_line_id))
+
+    return cache_usage
 

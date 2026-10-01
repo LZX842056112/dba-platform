@@ -92,11 +92,8 @@ async def get_agent(
     service = container.get("observability_service")
     if service is None:
         return {}
-    agents = await service.agents()
-    for agent in agents:
-        if str(agent.get("agent_uid")) == agent_uid:
-            return {"meta": agent, "metrics": {}, "skills": [], "recent_runs": []}
-    return {}
+    result: dict[str, Any] = await service.agent_detail(agent_uid)
+    return result
 
 
 @router.post("/agents/register", response_model=None)

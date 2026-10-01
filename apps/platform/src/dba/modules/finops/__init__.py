@@ -67,6 +67,7 @@ def build_finops(
     detail_source: Any = None,
     curve_source: Any = None,
     coverage_source: Any = None,
+    cache_source: Any = None,
     loop_counter: LoopCounter | None = None,
     alert_repo: Any = None,
     cost_normalizer: Any = None,
@@ -95,6 +96,7 @@ def build_finops(
         curve=curve,
         reco_repo=reco_repo,
         coverage_source=coverage_source,
+        cache_source=cache_source,
         budget=budget,
         policy=effective_policy,
     )

@@ -978,6 +978,7 @@ def build_container(settings: Settings) -> Container:
         from .capabilities.budget import GuardrailPolicy  # noqa: PLC0415
         from .modules.finops import build_finops  # noqa: PLC0415
         from .modules.finops.sources import (  # noqa: PLC0415
+            build_cache_source,
             build_coverage_source,
             build_detail_source,
         )
@@ -990,6 +991,7 @@ def build_container(settings: Settings) -> Container:
             cost_normalizer=container.get("cost_normalizer"),
             coverage_source=build_coverage_source(bundle.repos),
             detail_source=build_detail_source(bundle.repos),
+            cache_source=build_cache_source(bundle.repos),
             policy=GuardrailPolicy.from_dict(settings.guardrail_policy()),
         )
         container.set("finops", finops)

@@ -265,6 +265,8 @@ class RunRepo(_Repo):
             stmt = stmt.where(m.Run.module == flt["module"])
         if flt.get("biz_line_id") is not None:
             stmt = stmt.where(m.Run.biz_line_id == flt["biz_line_id"])
+        if flt.get("agent_uid"):
+            stmt = stmt.where(m.Run.agent_uid == flt["agent_uid"])
         if flt.get("status"):
             stmt = stmt.where(m.Run.status == flt["status"])
         if flt.get("since") is not None:
@@ -372,6 +374,41 @@ class LlmCallRepo(_Repo):
                 }
                 for r in by_provider
             ],
+        }
+
+    async def cache_savings(self, biz_line_id: int | None = None) -> dict[str, Any]:
+        """prompt 缓存节省估算（``cache_hit=1`` 的 cached token × 全价-缓存读价差）。
+
+        ★ 口径：仅对 ``PER_1K_TOKEN`` 计价估算 ``saved_micro_usd``（其它 unit 保守不计）；
+        ``cached_tokens/cached_calls`` 为真实聚合值。
+        """
+        conds = [m.LlmCall.cache_hit == 1]
+        if biz_line_id is not None:
+            conds.append(m.LlmCall.biz_line_id == biz_line_id)
+        by_price = await self._fetch(
+            sa.select(
+                m.LlmCall.price_book_id,
+                sa.func.sum(m.LlmCall.cached_tokens).label("tokens"),
+                sa.func.count().label("calls"),
+            )
+            .where(*conds)
+            .group_by(m.LlmCall.price_book_id)
+        )
+        cached_tokens = sum(int(r["tokens"] or 0) for r in by_price)
+        cached_calls = sum(int(r["calls"] or 0) for r in by_price)
+        price_by_id = {r["id"]: r for r in await self._fetch(sa.select(m.PriceBook.__table__))}
+        saved = 0
+        for r in by_price:
+            price = price_by_id.get(r["price_book_id"])
+            tokens = int(r["tokens"] or 0)
+            if price is not None and price.get("billing_unit") == "PER_1K_TOKEN":
+                input_price = int(price["input_price_micro_usd"])
+                cache_price = int(price["cache_read_price_micro_usd"])
+                saved += tokens * max(0, input_price - cache_price) // 1000
+        return {
+            "cached_tokens": cached_tokens,
+            "cached_calls": cached_calls,
+            "saved_micro_usd": saved,
         }
 
 
@@ -599,6 +636,17 @@ class BudgetRepo(_Repo):
 
     async def get(self, budget_id: int) -> Row | None:
         return await self._fetch_one(sa.select(m.Budget.__table__).where(m.Budget.id == budget_id))
+
+    async def list(self, flt: Row) -> list[Row]:
+        """按 ``scope_type/scope_id/period`` 过滤预算列表（供 ``GET /finops/budgets``）。"""
+        stmt = sa.select(m.Budget.__table__)
+        if flt.get("scope_type"):
+            stmt = stmt.where(m.Budget.scope_type == flt["scope_type"])
+        if flt.get("scope_id"):
+            stmt = stmt.where(m.Budget.scope_id == flt["scope_id"])
+        if flt.get("period"):
+            stmt = stmt.where(m.Budget.period == flt["period"])
+        return await self._fetch(stmt.order_by(m.Budget.id.asc()))
 
     async def upsert(self, row: Row) -> int:
         """按 ``(scope_type, scope_id, period, version)`` 幂等写入，返回 ``budget.id``。"""
@@ -878,6 +926,11 @@ class AppAgentRepo(_Repo):
         if flt.get("status"):
             stmt = stmt.where(m.AppAgent.status == flt["status"])
         return await self._fetch(stmt)
+
+    async def by_uid(self, agent_uid: str) -> Row | None:
+        return await self._fetch_one(
+            sa.select(m.AppAgent.__table__).where(m.AppAgent.agent_uid == agent_uid)
+        )
 
     async def upsert(self, row: Row) -> None:
         existing = await self._fetch_one(

@@ -42,6 +42,7 @@ class FinopsService:
         curve: Any = None,
         reco_repo: Any = None,
         coverage_source: Any = None,
+        cache_source: Any = None,
         budget: Any = None,
         policy: GuardrailPolicy | None = None,
     ) -> None:
@@ -50,6 +51,7 @@ class FinopsService:
         self._curve = curve
         self._reco = reco_repo
         self._coverage = coverage_source
+        self._cache = cache_source
         self._budget = budget
         self._policy = policy or GuardrailPolicy()
 
@@ -123,14 +125,22 @@ class FinopsService:
     async def cache_stats(
         self, *, since: datetime, until: datetime, biz_line_id: int | None = None
     ) -> dict[str, Any]:
-        """``GET /finops/cache/stats``（复用 observability 的记忆指标）。"""
+        """``GET /finops/cache/stats``（复用 observability 的记忆指标 + prompt 缓存节省）。"""
         _ = (since, until)
         metrics = None
         if self._obs is not None:
             metrics = await self._obs.memory_metrics(since.date(), biz_line_id)
+        cache: dict[str, Any] = {"cached_tokens": 0, "cached_calls": 0, "saved_micro_usd": 0}
+        if self._cache is not None:
+            try:
+                cache = dict(await self._cache(biz_line_id))
+            except Exception as exc:  # noqa: BLE001 - 节省估算失败降级为 0
+                logger.warning("prompt 缓存节省估算失败（降级）：%s", exc)
         return {
             "hit_rate": getattr(metrics, "hit_rate", 0.0) if metrics else 0.0,
-            "saved_micro_usd": 0,  # 精确节省需 llm_call 明细回填（见报告遗留问题）
+            "saved_micro_usd": int(cache.get("saved_micro_usd", 0) or 0),
+            "cached_tokens": int(cache.get("cached_tokens", 0) or 0),
+            "cached_calls": int(cache.get("cached_calls", 0) or 0),
             "by_task": [],
         }
 

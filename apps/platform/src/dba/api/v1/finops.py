@@ -168,11 +168,13 @@ async def list_budgets(
     period: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/budgets``（admin）。"""
-    _ = (scope_type, scope_id, period)
     repos = container.get("repos")
     if repos is None:
         return []
-    return []
+    rows: list[dict[str, Any]] = await repos.budget.list(
+        {"scope_type": scope_type, "scope_id": scope_id, "period": period}
+    )
+    return rows
 
 
 @router.post("/budgets", response_model=None)
@@ -262,6 +264,13 @@ async def upsert_price(
     except Exception as exc:  # noqa: BLE001
         logger.warning("价格表写入失败：%s", exc)
         return JSONResponse(status_code=500, content={"code": "50000", "message": "价格写入失败"})
+    # ★ 写库后刷新 in-process 价格缓存，让新价格即时生效（无需重启）
+    price_cache = container.get("price_cache")
+    if price_cache is not None:
+        try:
+            await price_cache.refresh(repos.price_book)
+        except Exception as exc:  # noqa: BLE001 - 刷新失败不阻断写入
+            logger.warning("价格缓存刷新失败：%s", exc)
     return {"price_id": payload.get("id")}
 
 
@@ -273,10 +282,25 @@ async def sync_prices(
 ) -> dict[str, Any]:
     """``POST /finops/prices/sync``（admin）。
 
-    ★ 外部价格源同步未接入（无供应商价格 API），返回空同步结果并标注未实现。
+    ★ 无外部价格源（供应商价格 API 未接入），语义改为「从 ``price_book`` 重载
+    in-process ``price_cache``」，使新增/修改的价格即时生效，无需重启进程。
     """
-    _ = (payload, container)
-    return {"updated": 0, "skipped": 0, "failed": [], "note": "外部价格源同步未实现（TODO）"}
+    _ = payload
+    repos = container.get("repos")
+    price_cache = container.get("price_cache")
+    if repos is None or price_cache is None:
+        return {"updated": 0, "skipped": 0, "failed": [], "note": "价格缓存未装配"}
+    try:
+        count = int(await price_cache.refresh(repos.price_book))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("价格缓存重载失败：%s", exc)
+        return {"updated": 0, "skipped": 0, "failed": [str(exc)], "note": "重载失败"}
+    return {
+        "updated": count,
+        "skipped": 0,
+        "failed": [],
+        "note": "已从本地 price_book 重载 in-process 价格缓存（外部价格源未接入）",
+    }
 
 
 @router.post("/cost/recompute")

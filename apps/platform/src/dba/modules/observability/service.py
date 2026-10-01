@@ -145,6 +145,31 @@ class ObservabilityService:
             logger.warning("Agent 列表查询失败（降级为空）：%s", exc)
             return []
 
+    async def agent_detail(self, agent_uid: str) -> dict[str, Any]:
+        """``GET /obs/agents/{uid}``：Agent 元数据 + 最近 run + 汇总指标。"""
+        if self._agents is None:
+            return {}
+        try:
+            meta = dict(await self._agents.by_uid(agent_uid) or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Agent 详情查询失败（降级为空）：%s", exc)
+            return {}
+        if not meta:
+            return {}
+        runs = await self._runs_of({"agent_uid": agent_uid, "limit": 20})
+        success = sum(1 for r in runs if str(r.get("status")) == "success")
+        cost = sum(int(r.get("cost_micro_usd") or 0) for r in runs)
+        return {
+            "meta": meta,
+            "metrics": {
+                "recent_runs": len(runs),
+                "success_rate": round(success / len(runs), 4) if runs else 0.0,
+                "cost_micro_usd": cost,
+            },
+            "skills": [],  # 无 agent→skill 直连映射（skill 按 biz_line 归属），诚实空态
+            "recent_runs": runs,
+        }
+
     # ── 技能 / 记忆指标 ─────────────────────────────────────────────
     async def skill_metrics(self, stat_date: Any, biz_line_id: int | None) -> Any:
         if self._skill_metrics is None:
