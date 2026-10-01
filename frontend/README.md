@@ -1,17 +1,20 @@
 # 前端最小集 · 数据大屏 × 多 Agent 平台
 
 对齐《数据大屏-多Agent平台-三模块开发设计方案-v2》**§9（前端分层与交互协议）**。
-本目录只交付**能跑通主链路的最小集**，不含 20 个完整页面（观测 / FinOps 等属 P2）。
+本目录只交付**能跑通主链路的最小集**：本仓实际只有 **2 个页面**——`pages/login/LoginPage.tsx`
+与 `pages/chatbi/ChatSessionPage.tsx`（路由见 `app/routes.tsx`）。
+设计文档 §9.1 列的观测页 / FinOps 页 / 语义管理页 / 技能页等均**属 P2，未实现**。
 
 ## 技术栈（§9.1）
 
 | 依赖 | 用途 |
 |---|---|
 | Vite + React 18 + TypeScript | 构建与框架 |
-| ECharts 5（`echarts/core` 按需注册） | 图表渲染（§9.6） |
+| ECharts 5（`echarts/core` 按需注册） | 图表渲染（§9.6）；含地图 `MapChart` + `GeoComponent`，深色主题 `dba-dark` |
 | TanStack Query | 服务端状态（大屏 JSON 回拉） |
 | zustand | 客户端状态（`runStore` 幂等 reducer，§9.2） |
-| react-router-dom | 路由（最小集仅 `/` 对话页） |
+| react-router-dom | 路由（登录 + 对话页） |
+| 大屏布局 | **自研 CSS Grid**（`features/dashboard/components/DashboardGrid.tsx`）；**未使用 `react-grid-layout`**（该包未安装） |
 
 > 包管理器：设计文档写 `pnpm`；本机无 pnpm 时用 **npm**（脚本等价，已如实报告）。
 

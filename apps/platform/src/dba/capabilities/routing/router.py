@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-__all__ = ["ModelSpec", "ModelRoute", "ModelRouter", "RouteStrategy"]
+__all__ = ["ModelSpec", "ModelRoute", "ModelRouter", "RouteStrategy", "build_ladder"]
 
 RouteStrategy = Literal["quality", "balanced", "cheap"]
 
@@ -67,12 +67,42 @@ class ModelRoute:
         }
 
 
-def _default_ladder() -> list[ModelSpec]:
-    """默认降级阶梯（从高到低）。真实档位由配置/DB 覆盖。"""
+def _default_ladder(provider: str = "openai") -> list[ModelSpec]:
+    """默认降级阶梯（从高到低）：按 provider 取内置预设。
+
+    ★ 真实模型名必须与 ``llm_provider`` 匹配：此前阶梯写死 ``openai:gpt-4o``，
+    换上 DeepSeek 端点后会把 ``model="gpt-4o"`` 发过去 → 404 model not found。
+    """
+    premium, standard, economy = _PROVIDER_PRESETS.get(provider, _PROVIDER_PRESETS["openai"])
     return [
-        ModelSpec("premium", "openai", "gpt-4o", 4096, 10),
-        ModelSpec("standard", "openai", "gpt-4o-mini", 2048, 3),
-        ModelSpec("economy", "openai", "gpt-4o-mini", 1024, 1),
+        ModelSpec("premium", provider, premium, 4096, 10),
+        ModelSpec("standard", provider, standard, 2048, 3),
+        ModelSpec("economy", provider, economy, 1024, 1),
+    ]
+
+
+#: 各 provider 的内置模型阶梯（premium / standard / economy）
+_PROVIDER_PRESETS: dict[str, tuple[str, str, str]] = {
+    "openai": ("gpt-4o", "gpt-4o-mini", "gpt-4o-mini"),
+    "deepseek": ("deepseek-chat", "deepseek-chat", "deepseek-chat"),
+}
+
+
+def build_ladder(
+    provider: str = "openai",
+    *,
+    premium: str = "",
+    standard: str = "",
+    economy: str = "",
+) -> list[ModelSpec]:
+    """按 provider 内置预设 + 显式覆盖构造模型阶梯（供 ``ModelRouter`` 使用）。"""
+    default = _default_ladder(provider)
+    overrides = (premium, standard, economy)
+    return [
+        ModelSpec(
+            spec.tier, provider, overrides[i] or spec.model, spec.max_output_tokens, spec.cost_rank
+        )
+        for i, spec in enumerate(default)
     ]
 
 

@@ -910,6 +910,12 @@ class SqlAuditRepo(_Repo):
         """写一条 SQL 审计（护栏 deny/rewrite、执行审计共用）。"""
         # sql_audit 无独立 code 列：把符号错误码折进 deny_reason，便于按码检索。
         reason = f"[{code}] {deny_reason}" if code and deny_reason else deny_reason
+        # ★ deny_reason 是 VARCHAR(255)，而护栏会把「整条 SQL + 完整报错」塞进来（常 > 500 字符）
+        #   → 不截断会 DataError(1406)，令审计写入失败，进而把整个 Run 打成 STORAGE_UNAVAILABLE
+        #   （实测：模型写出未知列 → dry-run 报错 → 审计写入 1406 → 整次查询 500）。
+        max_reason = 255
+        if reason and len(reason) > max_reason:
+            reason = reason[: max_reason - 1] + "…"
         row: Row = {
             "trace_id": trace_id,
             "user_id": user_id,

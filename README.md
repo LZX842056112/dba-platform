@@ -38,5 +38,33 @@ uv run mypy packages apps
 uv run pytest -q
 ```
 
-> 当前进度：**B0（骨架/基础设施）+ B1（运行时内核 `dba_runtime`）** 已交付。
-> B2~B6（存储适配层 / L4 能力层 / 三模块业务 / 前端 / 评测）按批次推进。
+> 当前进度：**B0~B6 均已交付** —— 存储适配层 / L4 能力层 / 三模块业务（ChatBI · 可观测性 · FinOps）/
+> 聊天主链路与大屏前端 / 评测套件。后端 **68 个 API 端点**；前端 **2 个页面**（登录页 + 对话页，
+> 观测/FinOps 页面属 P2 未实现，但其后端端点是就绪的）。
+>
+> **默认走确定性演示替身**（`DemoLLMClient`）——追问同一问题结果稳定；要让大屏真正随问题变化，
+> 见下方「接真实模型」。
+
+## 接真实模型（让大屏随问题变化）
+
+```bash
+# .env
+DBA_ENV=dev
+DBA_LLM_PROVIDER=deepseek
+DBA_LLM_BASE_URL=https://api.deepseek.com/v1   # ★ 只到 /v1，SDK 会自行追加 /chat/completions
+DBA_LLM_API_KEY=sk-xxx
+DBA_LLM_ALLOW_DEV=true                          # ★ dev 默认走替身，置 true 才用真实模型
+DBA_LLM_MODEL_PREMIUM=deepseek-chat
+DBA_LLM_MODEL_STANDARD=deepseek-chat
+DBA_LLM_MODEL_ECONOMY=deepseek-chat
+```
+
+**LLM 三态开关**（优先级由高到低）：
+
+1. `DBA_LLM_USE_FAKE=true` → 恒用替身（**浏览器 e2e 靠它锁死确定性**）
+2. `DBA_ENV=test` 或 API Key 为空 → 替身
+3. `DBA_ENV=dev` 且未设 `DBA_LLM_ALLOW_DEV=true` → 替身（避免开发期误打付费 API）
+4. 否则 → 真实模型
+
+> ⚠️ 前置：真实模型依赖**语义层**才知道表结构。请确保已跑 `uv run dba seed --demo`
+> （它会登记 `sem_metric` 口径与 15 条 `sem_field_mapping` 字段映射）。

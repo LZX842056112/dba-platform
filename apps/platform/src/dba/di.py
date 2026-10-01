@@ -788,9 +788,19 @@ def build_container(settings: Settings) -> Container:
         )
     container.set("semantics", semantics_service)
 
-    from .capabilities.routing import ModelRouter  # noqa: PLC0415
+    from .capabilities.routing import ModelRouter, build_ladder  # noqa: PLC0415
 
-    container.set("model_router", ModelRouter())
+    container.set(
+        "model_router",
+        ModelRouter(
+            ladder=build_ladder(
+                settings.llm_provider,
+                premium=settings.llm_model_premium,
+                standard=settings.llm_model_standard,
+                economy=settings.llm_model_economy,
+            )
+        ),
+    )
 
     from .capabilities.embedding import (  # noqa: PLC0415
         HashEmbedder,
@@ -946,8 +956,21 @@ def build_container(settings: Settings) -> Container:
 
 
 def _build_llm(settings: Settings, container: Container) -> Any:
-    """构造 LLM 客户端；无 Key / 测试环境回退到确定性演示替身。"""
-    if settings.llm_use_fake or settings.env in ("test", "dev") or not settings.llm_api_key:
+    """构造 LLM 客户端；无 Key / 测试环境 / 未放行的 dev 回退到确定性演示替身。
+
+    ★ 三态（优先级由高到低）：
+      1) ``DBA_LLM_USE_FAKE=true``                         → 恒替身（浏览器 e2e 用它锁死确定性）
+      2) ``DBA_ENV=test`` 或 API Key 为空                  → 替身
+      3) ``DBA_ENV=dev`` 且未设 ``DBA_LLM_ALLOW_DEV=true`` → 替身（开发期默认不打付费 API）
+      4) 否则                                              → 真实模型
+    """
+    use_fake = (
+        settings.llm_use_fake
+        or settings.env == "test"
+        or not settings.llm_api_key
+        or (settings.env == "dev" and not settings.llm_allow_dev)
+    )
+    if use_fake:
         return DemoLLMClient()
     try:
         from dba_runtime.llm.openai_client import OpenAIClient  # noqa: PLC0415

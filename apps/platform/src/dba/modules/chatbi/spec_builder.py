@@ -192,6 +192,14 @@ class DashboardSpecBuilder:
             x, y, w, h = self._layout_for(idx, raw)
             items.append(LayoutItem(i=panel_id, x=x, y=y, w=w, h=h, minW=3, minH=5))
             dataset = dict(raw.get("dataset") or {"ref": DEFAULT_REF})
+            # ★ 兜底：真实模型可能编造不存在的 ref → 该面板会恒「暂无数据」。
+            #   不在实际结果集里就回退到主查询。
+            ref = str(dataset.get("ref") or DEFAULT_REF)
+            if ref not in results:
+                logger.warning(
+                    "面板 %s 的 dataset.ref=%s 不存在，回退 %s", panel_id, ref, DEFAULT_REF
+                )
+                dataset["ref"] = DEFAULT_REF
             try:
                 panels.append(
                     self._panel(panel_id, raw, dataset, metric_codes, biz_line_id, scope_hash)

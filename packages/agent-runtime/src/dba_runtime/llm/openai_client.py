@@ -87,7 +87,11 @@ class OpenAIClient:
     async def stream(
         self, messages: list[dict[str, Any]], choice: ModelChoice, **kwargs: Any
     ) -> AsyncIterator[str]:
-        stream = self._client.chat.completions.create(
+        # ★ 必须 await：异步 SDK 的 create(stream=True) 返回的是 **coroutine**，
+        #   不 await 直接 `async for` 会报
+        #   "'async for' requires an object with __aiter__ method, got coroutine"。
+        #   （此缺陷只在真实模型下暴露：DemoLLMClient.stream 是真正的异步生成器。）
+        stream = await self._client.chat.completions.create(
             model=choice.model,
             messages=messages,
             max_tokens=choice.max_tokens,

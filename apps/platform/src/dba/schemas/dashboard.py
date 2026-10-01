@@ -48,7 +48,7 @@ class LayoutItem(BaseModel):
     y: int
     w: int
     h: int
-    minW: int | None = None  # noqa: N815 - 与前端 react-grid-layout 字段一致
+    minW: int | None = None  # noqa: N815 - 与前端 DashboardGrid（CSS Grid）字段一致
     minH: int | None = None  # noqa: N815
 
 

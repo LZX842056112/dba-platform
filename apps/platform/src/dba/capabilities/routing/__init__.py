@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from .gateway import DEFAULT_TASK_STRATEGY, ModelGateway
-from .router import ModelRoute, ModelRouter, ModelSpec, RouteStrategy
+from .router import ModelRoute, ModelRouter, ModelSpec, RouteStrategy, build_ladder
 
 __all__ = [
     "ModelRoute",
@@ -19,4 +19,5 @@ __all__ = [
     "RouteStrategy",
     "ModelGateway",
     "DEFAULT_TASK_STRATEGY",
+    "build_ladder",
 ]

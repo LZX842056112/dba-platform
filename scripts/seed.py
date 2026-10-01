@@ -31,10 +31,104 @@ from dba.storage.mysql.models import (
     BizLine,
     Budget,
     PriceBook,
+    SemFieldMapping,
     SemMetric,
     SkillRegistry,
 )
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+
+#: 逻辑字段 → ``fact_sales`` 物理列映射。
+#: ★ 这决定真实模型能否写出对的 SQL —— ``schema_link`` 的提示词「## 字段映射」段就来自本表。
+#: ``metric_code`` 非空时关联 ``sem_metric``（外键）；``samples`` 供模型理解取值。
+_FACT_FIELD_MAPPINGS: tuple[dict, ...] = (
+    {
+        "logical_field": "dt",
+        "physical_column": "dt",
+        "is_dimension": 1,
+        "samples": ["2026-09-01", "2026-09-02"],
+    },
+    {
+        "logical_field": "region_code",
+        "physical_column": "region_code",
+        "is_dimension": 1,
+        "samples": ["north", "east", "west"],
+    },
+    {
+        "logical_field": "channel",
+        "physical_column": "channel",
+        "is_dimension": 1,
+        "samples": ["online", "store"],
+    },
+    {
+        "logical_field": "province_code",
+        "physical_column": "province_code",
+        "is_dimension": 1,
+        "samples": ["110000", "320000", "330000"],
+    },
+    {
+        "logical_field": "province_name",
+        "physical_column": "province_name",
+        "is_dimension": 1,
+        "samples": ["北京市", "江苏省", "浙江省"],
+    },
+    {
+        "logical_field": "city_name",
+        "physical_column": "city_name",
+        "is_dimension": 1,
+        "samples": ["北京市", "南京市", "杭州市"],
+    },
+    {
+        "logical_field": "lat",
+        "physical_column": "lat",
+        "is_dimension": 1,
+        "samples": [39.9042, 32.0603],
+    },
+    {
+        "logical_field": "lon",
+        "physical_column": "lon",
+        "is_dimension": 1,
+        "samples": [116.4074, 118.7969],
+    },
+    {
+        "logical_field": "category_code",
+        "physical_column": "category_code",
+        "is_dimension": 1,
+        "samples": ["digital", "appliance", "apparel"],
+    },
+    {
+        "logical_field": "category_name",
+        "physical_column": "category_name",
+        "is_dimension": 1,
+        "samples": ["数码", "家电", "服饰"],
+    },
+    {
+        "logical_field": "gmv",
+        "physical_column": "gmv_ex_tax",
+        "is_dimension": 0,
+        "metric_code": "revenue",
+        "samples": [],
+    },
+    {
+        "logical_field": "order_cnt",
+        "physical_column": "order_cnt",
+        "is_dimension": 0,
+        "metric_code": "order_cnt",
+        "samples": [],
+    },
+    {
+        "logical_field": "profit",
+        "physical_column": "profit_ex_tax",
+        "is_dimension": 0,
+        "samples": [],
+    },
+    {"logical_field": "uv", "physical_column": "uv", "is_dimension": 0, "samples": []},
+    {
+        "logical_field": "refund_cnt",
+        "physical_column": "refund_cnt",
+        "is_dimension": 0,
+        "samples": [],
+    },
+)
 
 DEFAULT_DSN = os.environ.get(
     "DBA_MYSQL_DSN",
@@ -266,6 +360,74 @@ async def _seed_fact_sales(conn: sa.ext.asyncio.AsyncConnection) -> int:
     return len(rows)
 
 
+async def _upsert_sem_metrics(conn: sa.ext.asyncio.AsyncConnection, rows_in: list[dict]) -> int:
+    """按 ``(metric_code, biz_line_id IS NULL, version)`` **upsert** 指标口径。
+
+    ★ 为什么必须显式 upsert，不能用 ``_insert_missing`` / ``ON DUPLICATE KEY UPDATE``：
+      ① ``_insert_missing`` 遇已存在行会 ``continue`` 跳过 → **改了 ``sql_expr`` 也写不进库**；
+      ② 本表唯一键是 ``(metric_code, biz_line_id, version)``，而 ``biz_line_id IS NULL`` 时
+         MySQL 唯一索引把 NULL 视为互不相同 → 唯一键**根本约束不住**，dup-key 更新失效。
+    """
+    table = SemMetric.__table__
+    affected = 0
+    for row in rows_in:
+        values = {**row, "created_at": _now(), "updated_at": _now()}
+        biz = row.get("biz_line_id")
+        conds = [
+            table.c.metric_code == row["metric_code"],
+            table.c.biz_line_id.is_(None) if biz is None else table.c.biz_line_id == biz,
+            table.c.version == row["version"],
+        ]
+        exists = (
+            await conn.execute(sa.select(sa.literal(1)).select_from(table).where(*conds).limit(1))
+        ).scalar()
+        if exists:
+            await conn.execute(sa.update(table).where(*conds).values(**values))
+        else:
+            await conn.execute(sa.insert(table).values(**values))
+        affected += 1
+    return affected
+
+
+async def _seed_field_mappings(conn: sa.ext.asyncio.AsyncConnection) -> int:
+    """登记「逻辑字段 → ``fact_sales`` 物理列」（幂等）。
+
+    必须在 ``_upsert_sem_metrics`` 之后调用：``metric_id`` 是指向 ``sem_metric.id`` 的外键。
+    """
+    table = SemFieldMapping.__table__
+    res = await conn.execute(
+        sa.select(SemMetric.__table__.c.metric_code, SemMetric.__table__.c.id).where(
+            SemMetric.__table__.c.biz_line_id.is_(None),
+            SemMetric.__table__.c.status == 1,
+        )
+    )
+    code_to_id: dict[str, int] = {str(code): int(mid) for code, mid in res.fetchall()}
+
+    rows: list[dict] = []
+    for item in _FACT_FIELD_MAPPINGS:
+        code = item.get("metric_code")
+        samples = item.get("samples") or []
+        rows.append(
+            {
+                "logical_field": item["logical_field"],
+                "physical_table": "fact_sales",
+                "physical_column": item["physical_column"],
+                "join_path": None,
+                "is_dimension": item["is_dimension"],
+                # sa.JSON 会自行序列化：这里传 Python 对象，不要 json.dumps（否则双重编码）
+                "sample_values": samples or None,
+                "metric_id": code_to_id.get(str(code)) if code else None,
+                "created_at": _now(),
+            }
+        )
+    return await _insert_missing(
+        conn,
+        table,
+        rows,
+        ("logical_field", "physical_table", "physical_column"),
+    )
+
+
 async def _insert_missing(
     conn: sa.ext.asyncio.AsyncConnection,
     table: sa.Table,
@@ -318,15 +480,18 @@ async def seed(engine: sa.ext.asyncio.AsyncEngine, *, demo: bool) -> dict[str, i
         counts["auth_role"] = await _insert_missing(conn, AuthRole.__table__, roles, ("code",))
 
         # ── 指标口径（语义层权威源） ─────────────────────────────
+        # ★ 口径必须与演示事实表 ``fact_sales`` 的真实列对齐。此前写的是
+        #   ``SUM(amount)`` / ``COUNT(DISTINCT order_id)`` / ``…user_id``，
+        #   而 fact_sales 根本没有这三列 —— 会把真实模型带偏成必错的 SQL。
         metrics = [
             {
                 "metric_code": "revenue",
-                "metric_name": "营业收入",
+                "metric_name": "营业收入（GMV）",
                 "biz_line_id": None,
-                "caliber_desc": "按财务口径的确认收入，含税，按统计日聚合。",
-                "sql_expr": "SUM(amount)",
+                "caliber_desc": "支付口径 GMV，不含税，按统计日聚合。",
+                "sql_expr": "SUM(gmv_ex_tax)",
                 "unit": "CNY",
-                "include_tax": 1,
+                "include_tax": 0,
                 "version": 1,
                 "status": 1,
             },
@@ -334,29 +499,25 @@ async def seed(engine: sa.ext.asyncio.AsyncEngine, *, demo: bool) -> dict[str, i
                 "metric_code": "order_cnt",
                 "metric_name": "订单量",
                 "biz_line_id": None,
-                "caliber_desc": "有效订单去重计数（剔除取消/退单）。",
-                "sql_expr": "COUNT(DISTINCT order_id)",
+                "caliber_desc": "有效订单量（按粒度预聚合，直接求和）。",
+                "sql_expr": "SUM(order_cnt)",
                 "unit": "笔",
                 "version": 1,
                 "status": 1,
             },
             {
                 "metric_code": "arpu",
-                "metric_name": "用户客单价",
+                "metric_name": "访客客单价",
                 "biz_line_id": None,
-                "caliber_desc": "营业收入 / 活跃用户数。",
-                "sql_expr": "SUM(amount) / NULLIF(COUNT(DISTINCT user_id), 0)",
+                "caliber_desc": "访客客单价 = GMV / 访客数（UV）。",
+                "sql_expr": "SUM(gmv_ex_tax) / NULLIF(SUM(uv), 0)",
                 "unit": "CNY",
                 "version": 1,
                 "status": 1,
             },
         ]
-        counts["sem_metric"] = await _insert_missing(
-            conn,
-            SemMetric.__table__,
-            [{**x, "created_at": _now(), "updated_at": _now()} for x in metrics],
-            ("metric_code", "biz_line_id", "version"),
-        )
+        counts["sem_metric"] = await _upsert_sem_metrics(conn, metrics)
+        counts["sem_field_mapping"] = await _seed_field_mappings(conn)
 
         # ── 价格表（归一化 micro_usd / 1K tokens） ───────────────
         now = _now()

@@ -53,10 +53,14 @@ pass "虚拟机组件可达 / chrome-ws 与 chrome.exe 就位"
 log "2) 后端（:8000）"
 if [ "$(http_ok http://127.0.0.1:8000/health)" = "1" ]; then
   log "   复用已在运行的后端"
+  warn "复用实例的 LLM 模式未知：若它跑的是真实模型，V7/V10/V11/V12/V13 等确定性断言可能不稳"
+  warn "  → 需要确定性回归时，请先停掉它，让本脚本自行拉起（脚本会给后端注入 DBA_LLM_USE_FAKE=true）"
 else
-  log "   启动 uvicorn ..."
-  (cd "$ROOT" && exec uv run uvicorn dba.main:app --host 127.0.0.1 --port 8000 \
-    --log-level warning >"$OUT/backend.log" 2>&1) &
+  log "   启动 uvicorn ...（注入 DBA_LLM_USE_FAKE=true 锁定确定性）"
+  # ★ 本套 e2e 断言依赖确定性输出（SQL 含 gmv_ex_tax、七步全绿等）。
+  #   DBA_LLM_USE_FAKE 优先级最高，即使 .env 开了 DBA_LLM_ALLOW_DEV 也会走确定性替身。
+  (cd "$ROOT" && export DBA_LLM_USE_FAKE=true && exec uv run uvicorn dba.main:app \
+    --host 127.0.0.1 --port 8000 --log-level warning >"$OUT/backend.log" 2>&1) &
   BACKEND_PID=$!
 fi
 if ! wait_http http://127.0.0.1:8000/health 60; then

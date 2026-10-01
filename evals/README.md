@@ -35,7 +35,7 @@ uv run dba eval --suite all --gate evals/thresholds.yaml
 
 1. **`golden` 用「录播候选 SQL」**（`golden_set.jsonl` 的 `candidate_sql`）。
    因此它衡量的 EX 是 **护栏注入 + 执行 + 比较链路**的正确性，**不是模型准确率**。
-   真实 LLM 模式需外部密钥，当前未接线/未验证。
+   真实 LLM 已接线（`DBA_LLM_ALLOW_DEV=true`），但本套件**仍走录播 SQL**，故结果与模型无关、可复现。
    * 设计巧思：候选题大多**只写「朴素 SQL」**（不带 `region` 过滤），金标才带角色过滤。
      于是「行级注入是否真的生效」被 EX 直接检验——注入失效则候选会多出其它区域的行，
      EX 立即判错。

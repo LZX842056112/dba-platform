@@ -68,17 +68,33 @@ class VisualAgent:
     @staticmethod
     def _messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         template = load_prompt("visual") or "根据查询结果产出大屏 JSON 布局。"
-        rows = payload.get("rows") or []
-        columns = payload.get("columns") or []
-        sample = rows[:5]
+        # ★ 多查询：把**每个 ref** 的列名与样例都喂给模型，否则它看不见 q2~q5，
+        #   写不出正确的 `dataset.ref`（面板会全挤到 q1 或凭空编造 ref）。
+        results = payload.get("query_results")
+        if not isinstance(results, dict) or not results:
+            results = {
+                "q1": {
+                    "rows": list(payload.get("rows") or []),
+                    "columns": list(payload.get("columns") or []),
+                }
+            }
+        blocks: list[str] = []
+        for ref, item in results.items():
+            data = item if isinstance(item, dict) else {}
+            rows = list(data.get("rows") or [])
+            cols = [c.get("name") for c in (data.get("columns") or []) if isinstance(c, dict)]
+            blocks.append(
+                f"### ref={ref}（可用列：{cols}；共 {len(rows)} 行）\n样例（前 3 行）：{rows[:3]}"
+            )
+        available = ", ".join(str(r) for r in results)
         return [
             {"role": "system", "content": template},
             {
                 "role": "user",
                 "content": (
                     f"## 用户问题\n{payload.get('question') or ''}\n\n"
-                    f"## 结果列\n{columns}\n\n"
-                    f"## 结果样例（前 5 行，共 {len(rows)} 行）\n{sample}"
+                    f"## 可用 ref（`dataset.ref` 只能从这个集合里取）\n{available}\n\n"
+                    + "\n\n".join(blocks)
                 ),
             },
         ]

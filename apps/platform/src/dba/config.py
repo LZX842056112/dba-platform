@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     #: 为 True 时用内核 DeterministicLLM（离线/单测/演示），不访问外部模型
     llm_use_fake: bool = False
+    #: 允许在 dev 环境使用真实模型（默认 False：避免开发期误打付费 API 产生费用）
+    llm_allow_dev: bool = False
+    #: 模型阶梯（premium / standard / economy）；留空则按 llm_provider 取内置预设
+    llm_model_premium: str = ""
+    llm_model_standard: str = ""
+    llm_model_economy: str = ""
 
     # ── ChatBI 主链路（SQL 护栏 / 执行）─────────────────────
     #: 单次查询行数上限（超限截断并置 truncated=True）

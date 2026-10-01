@@ -15,6 +15,13 @@
 | 依赖 | `uv sync --all-packages --extra prod`（含 `asyncmy`/`motor` 等）+ `cd frontend && npm install` |
 | 浏览器 | Chrome 已安装；`chrome-ws` 存在（superpowers-chrome 插件自带，**零安装**） |
 
+> ★ **LLM 模式**：本套断言依赖**确定性输出**（SQL 含 `gmv_ex_tax`、七步全绿、canvas 数等）。
+> 脚本在自行拉起后端时会注入 `DBA_LLM_USE_FAKE=true`（该开关优先级最高，即使 `.env` 开了
+> `DBA_LLM_ALLOW_DEV=true` 也会走演示替身）。
+> **若复用已在运行的后端**，其 LLM 模式未知 —— 跑确定性回归前请先停掉它。
+> 想验证真实模型随问题变化，另行人工验收（断言应放宽为「无 `run.error`、面板 ≥2、每个
+> `dataset.ref` 都存在于 `data_sources`」）。
+
 `seed --demo` 会建演示事实表 `fact_sales`（45 天，日期相对 `CURDATE()`），
 并把 `admin/admin123`、`analyst1/analyst123` 的口令写成真 `sha256`。
 
