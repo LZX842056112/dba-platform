@@ -284,6 +284,47 @@ class LlmCallRepo(_Repo):
         result = await self._execute(sa.insert(m.LlmCall), many=rows)
         return int(result.rowcount or 0)
 
+    async def coverage_stats(self, biz_line_id: int | None = None) -> dict[str, Any]:
+        """计价覆盖率统计：priced 判定 = 命中价格表（``price_book_id`` 非空）。
+
+        ★ ``llm_call`` 无时间戳列，故覆盖率为「全历史」口径（诚实标注，不假装时间窗）。
+        """
+        conds = [m.LlmCall.biz_line_id == biz_line_id] if biz_line_id is not None else []
+        priced_case = sa.case((m.LlmCall.price_book_id.isnot(None), 1), else_=0)
+        totals = await self._fetch(
+            sa.select(
+                sa.func.count().label("total"),
+                sa.func.sum(priced_case).label("priced"),
+            )
+            .select_from(m.LlmCall)
+            .where(*conds)
+        )
+        total = int(totals[0]["total"] or 0) if totals else 0
+        priced = int(totals[0]["priced"] or 0) if totals else 0
+        by_provider = await self._fetch(
+            sa.select(
+                m.LlmCall.provider,
+                sa.func.count().label("total"),
+                sa.func.sum(priced_case).label("priced"),
+            )
+            .select_from(m.LlmCall)
+            .where(*conds)
+            .group_by(m.LlmCall.provider)
+        )
+        return {
+            "total": total,
+            "priced": priced,
+            "unpriced": total - priced,
+            "by_provider": [
+                {
+                    "provider": str(r["provider"]),
+                    "total": int(r["total"] or 0),
+                    "priced": int(r["priced"] or 0),
+                }
+                for r in by_provider
+            ],
+        }
+
 
 class ToolCallRepo(_Repo):
     async def bulk_insert(self, rows: list[Row]) -> int:

@@ -960,6 +960,7 @@ def build_container(settings: Settings) -> Container:
     if bundle.repos is not None:
         from .capabilities.budget import GuardrailPolicy  # noqa: PLC0415
         from .modules.finops import build_finops  # noqa: PLC0415
+        from .modules.finops.sources import build_coverage_source  # noqa: PLC0415
 
         finops = build_finops(
             observability=observability_service,
@@ -967,6 +968,7 @@ def build_container(settings: Settings) -> Container:
             reco_repo=(bundle.mongo_repos.finops_recommendation if bundle.mongo_repos else None),
             alert_repo=bundle.repos.alert_event,
             cost_normalizer=container.get("cost_normalizer"),
+            coverage_source=build_coverage_source(bundle.repos),
             policy=GuardrailPolicy.from_dict(settings.guardrail_policy()),
         )
         container.set("finops", finops)
