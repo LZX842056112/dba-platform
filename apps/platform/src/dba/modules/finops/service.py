@@ -19,11 +19,12 @@ v2 没有为 kill_switch 设计存储表。本批次做**最小落地**：进程
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import fields, replace
+from datetime import datetime
 from typing import Any
 
 from dba.capabilities.budget import GuardrailPolicy
+from dba.util.time import recent_window, utcnow_naive
 
 __all__ = ["FinopsService"]
 
@@ -110,7 +111,7 @@ class FinopsService:
     ) -> list[dict[str, Any]]:
         """``GET /finops/cost/top-spenders``。"""
         _ = period
-        since, until = _default_window(days=30)
+        since, until = recent_window(days=30)
         rows = await self._timeseries("cost_micro_usd", since, until, None)
         agg: dict[str, int] = {}
         for row in rows:
@@ -231,32 +232,22 @@ class FinopsService:
 
     # ── 护栏策略（U26：进程内最小实现）─────────────────────────────
     async def guardrail_policy(self) -> dict[str, Any]:
-        return _policy_dict(self._policy)
+        return self._policy.to_dict()
 
     async def update_policy(self, patch: dict[str, Any]) -> dict[str, Any]:
         """``PATCH /finops/guardrail/policy``（进程内覆盖；持久化见报告遗留问题）。"""
-        allowed = {
-            "enabled",
-            "allow_downgrade",
-            "allow_compress",
-            "allow_rate_limit",
-            "allow_circuit_break",
-            "exemption_priority",
-            "breaker_window_s",
-            "breaker_consecutive_windows",
-            "breaker_cooldown_s",
-            "max_downgrades_per_run",
-            "kill_switch",
-        }
+        # ★ 可覆盖字段从 dataclass 字段派生（排除设置级 ``degrade_policy``），
+        #   避免与 ``to_dict`` 的字段清单漂移
+        allowed = {f.name for f in fields(GuardrailPolicy)} - {"degrade_policy"}
         changes = {k: v for k, v in patch.items() if k in allowed}
         if changes:
             self._policy = replace(self._policy, **changes)
-        return _policy_dict(self._policy)
+        return self._policy.to_dict()
 
     async def kill_switch(self, *, enabled: bool, reason: str) -> dict[str, Any]:
         """``POST /finops/guardrail/kill-switch``（★ 全局逃生开关）。"""
         self._policy = replace(self._policy, kill_switch=enabled)
-        effective_at = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        effective_at = utcnow_naive().isoformat()
         logger.warning("kill_switch 切换 enabled=%s reason=%s", enabled, reason)
         return {
             "ok": True,
@@ -296,24 +287,3 @@ def _group_key(row: dict[str, Any], group_by: str) -> str:
     if group_by == "model":
         return str(row.get("model") or "")
     return str(row.get("model") or "")
-
-
-def _policy_dict(policy: GuardrailPolicy) -> dict[str, Any]:
-    return {
-        "enabled": policy.enabled,
-        "allow_downgrade": policy.allow_downgrade,
-        "allow_compress": policy.allow_compress,
-        "allow_rate_limit": policy.allow_rate_limit,
-        "allow_circuit_break": policy.allow_circuit_break,
-        "exemption_priority": policy.exemption_priority,
-        "breaker_window_s": policy.breaker_window_s,
-        "breaker_consecutive_windows": policy.breaker_consecutive_windows,
-        "breaker_cooldown_s": policy.breaker_cooldown_s,
-        "max_downgrades_per_run": policy.max_downgrades_per_run,
-        "kill_switch": policy.kill_switch,
-    }
-
-
-def _default_window(days: int = 30) -> tuple[datetime, datetime]:
-    until = datetime.now(UTC).replace(tzinfo=None)
-    return until - timedelta(days=days), until

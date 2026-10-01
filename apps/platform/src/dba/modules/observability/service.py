@@ -164,7 +164,7 @@ class ObservabilityService:
         total_runs = 0
         if self._run is not None:
             for module in SELF_MODULES:
-                rows = await self._runs_of_module(module, since, until)
+                rows = await self._runs_of({"module": module, "since": since, "until": until})
                 cost = sum(int(r.get("cost_micro_usd") or 0) for r in rows)
                 by_module[module] = {"cost_micro_usd": cost, "runs": len(rows)}
                 total_cost += cost
@@ -176,16 +176,17 @@ class ObservabilityService:
             "note": "平台自身消耗（observability/finops），已从业务成本曲线中排除",
         }
 
-    async def _runs_of_module(
-        self, module: str, since: datetime, until: datetime
-    ) -> list[dict[str, Any]]:
+    async def _runs_of(self, flt: dict[str, Any]) -> list[dict[str, Any]]:
+        """按过滤条件读取 run 明细（降级为空，不抛异常）。"""
+        if self._run is None:
+            return []
         try:
             rows: list[dict[str, Any]] = await self._run.list_runs(
-                {"module": module, "since": since, "until": until, "limit": 10000}, limit=10000
+                {**flt, "limit": 10000}, limit=10000
             )
             return rows
         except Exception as exc:  # noqa: BLE001
-            logger.warning("self_cost 读取 module=%s 失败（降级）：%s", module, exc)
+            logger.warning("读取 run 明细失败（降级）：%s", exc)
             return []
 
     # ── 概览 / 拓扑 ─────────────────────────────────────────────────
@@ -197,7 +198,9 @@ class ObservabilityService:
             metric="cost_micro_usd", since=since, until=until, biz_line_id=biz_line_id
         )
         cost_total = sum(int(r["value"]) for r in rows)
-        runs = await self._runs_of_window(since, until, biz_line_id)
+        runs = await self._runs_of(
+            {"biz_line_id": biz_line_id, "since": since, "until": until}
+        )
         success = sum(1 for r in runs if str(r.get("status")) == "success")
         silent = sum(
             1
@@ -218,21 +221,6 @@ class ObservabilityService:
             "trend": {"granularity": "day", "series": rows},
             "top_agents": _top_agents(runs),
         }
-
-    async def _runs_of_window(
-        self, since: datetime, until: datetime, biz_line_id: int | None
-    ) -> list[dict[str, Any]]:
-        if self._run is None:
-            return []
-        try:
-            rows: list[dict[str, Any]] = await self._run.list_runs(
-                {"biz_line_id": biz_line_id, "since": since, "until": until, "limit": 10000},
-                limit=10000,
-            )
-            return rows
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("overview 读取 run 失败（降级）：%s", exc)
-            return []
 
     async def topology(self, biz_line_id: int | None) -> dict[str, Any]:
         """``GET /obs/topology``。"""

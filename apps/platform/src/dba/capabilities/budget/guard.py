@@ -50,6 +50,23 @@ class GuardrailPolicy:
         kwargs = {k: v for k, v in data.items() if k in fields}
         return cls(**kwargs)
 
+    def to_dict(self) -> dict[str, Any]:
+        """序列化为 dict（与 ``from_dict`` 互逆，供 FinOps 只读服务返回）。"""
+        return {
+            "enabled": self.enabled,
+            "allow_downgrade": self.allow_downgrade,
+            "allow_compress": self.allow_compress,
+            "allow_rate_limit": self.allow_rate_limit,
+            "allow_circuit_break": self.allow_circuit_break,
+            "exemption_priority": self.exemption_priority,
+            "breaker_window_s": self.breaker_window_s,
+            "breaker_consecutive_windows": self.breaker_consecutive_windows,
+            "breaker_cooldown_s": self.breaker_cooldown_s,
+            "max_downgrades_per_run": self.max_downgrades_per_run,
+            "kill_switch": self.kill_switch,
+            "degrade_policy": self.degrade_policy,
+        }
+
     def allowed_soft_actions(self) -> tuple[str, ...]:
         """当前策略下**允许**执行的软限动作集合。"""
         actions: list[str] = ["ALERT"]

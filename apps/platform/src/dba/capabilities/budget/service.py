@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from dba_runtime.errors import StorageUnavailableError
 
 from dba.capabilities.cost.price_cache import PriceCache
+from dba.util.time import utcnow_naive
 
 from .ulid import new_reservation_id
 
@@ -454,4 +455,4 @@ class BudgetService:
 
 def _utcnow_naive() -> dt.datetime:
     """MySQL ``DATETIME(3)`` 存 UTC 无时区；统一用 naive UTC（§6.2）。"""
-    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    return utcnow_naive()

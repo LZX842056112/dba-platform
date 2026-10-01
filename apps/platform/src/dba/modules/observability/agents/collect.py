@@ -33,7 +33,7 @@ class CollectAgent:
 
     @traced("step.obs.collect", kind="agent")
     async def run(self, payload: dict[str, Any], ctx: RunContext) -> AgentOutput:
-        window = _window_of(payload)
+        window = _collect_window(payload)
         biz_line_id = payload.get("biz_line_id", ctx.biz_line_id)
 
         runs: list[dict[str, Any]] = []
@@ -73,7 +73,7 @@ class CollectAgent:
         )
 
 
-def _window_of(payload: dict[str, Any]) -> dict[str, datetime]:
+def _collect_window(payload: dict[str, Any]) -> dict[str, datetime]:
     """从 payload 解析时间窗（默认近 24h，UTC）。"""
     until = payload.get("until")
     since = payload.get("since")

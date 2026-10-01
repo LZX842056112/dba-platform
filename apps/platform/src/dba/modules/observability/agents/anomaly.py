@@ -50,7 +50,7 @@ class AnomalyScanAgent:
 
     @traced("step.obs.anomaly", kind="agent")
     async def run(self, payload: dict[str, Any], ctx: RunContext) -> AgentOutput:
-        window = _window_of(payload)
+        window = _detect_window(payload)
         scope = _scope_of(payload, ctx)
 
         anomalies = await self._detector.detect(window, scope)
@@ -142,7 +142,7 @@ def _suggestion_for(anomaly: Anomaly) -> dict[str, Any]:
     return {"action": "notify_owner", "risk": "low", "auto_applicable": False}
 
 
-def _window_of(payload: dict[str, Any]) -> Window:
+def _detect_window(payload: dict[str, Any]) -> Window:
     """从 payload 解析时间窗（默认近 24h，UTC）。"""
     now = datetime.now(UTC).replace(tzinfo=None)
     until = payload.get("until")

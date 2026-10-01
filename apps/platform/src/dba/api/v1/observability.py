@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
+from dba.api.v1._common import parse_window
 from dba.di import Container
 
 __all__ = ["router"]
@@ -23,22 +24,6 @@ __all__ = ["router"]
 logger = logging.getLogger("dba.api.observability")
 
 router = APIRouter()
-
-
-def _window(from_: str | None, to: str | None, *, hours: int = 24) -> tuple[datetime, datetime]:
-    """解析 ``from/to``（ISO8601）；缺省近 N 小时（UTC naive）。"""
-    until = _parse_ts(to) or datetime.now(UTC).replace(tzinfo=None)
-    since = _parse_ts(from_) or (until - timedelta(hours=hours))
-    return since, until
-
-
-def _parse_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).replace(tzinfo=None)
-    except ValueError:
-        return None
 
 
 def _require_agent_token(
@@ -61,7 +46,7 @@ async def overview(
     to: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /obs/overview``：四张 KPI 卡 + 趋势 + top agents。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(hours=24))
     service = container.get("observability_service")
     if service is None:
         return {"kpi_cards": {}, "trend": {"series": []}, "top_agents": []}
@@ -176,7 +161,7 @@ async def list_runs(
     repos = container.get("repos")
     if repos is None:
         return []
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(hours=24))
     try:
         rows: list[dict[str, Any]] = await repos.run.list_runs(
             {
@@ -221,7 +206,7 @@ async def self_cost(
     to: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """★ ``GET /obs/self-cost``：平台自身（03/10）消耗，不进业务成本曲线（P1-4）。"""
-    since, until = _window(from_, to, hours=24)
+    since, until = parse_window(from_, to, span=timedelta(hours=24))
     service = container.get("observability_service")
     if service is None:
         return {"by_module": {}, "total_cost_micro_usd": 0, "total_runs": 0}
@@ -241,7 +226,7 @@ async def metrics_timeseries(
     to: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /obs/metrics/timeseries``（只读 ``metric_daily``，经 owner 服务）。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(hours=24))
     service = container.get("observability_service")
     if service is None:
         return {"series": []}
@@ -350,6 +335,20 @@ async def anomaly_detail(
     return await service.anomaly_detail(alert_id) or {}
 
 
+async def _ack_alert(
+    alert_id: int, container: Container, principal: Principal
+) -> dict[str, Any]:
+    """确认一条异常（``ack`` 与 ``resolve`` 共用同一实现）。"""
+    repos = container.get("repos")
+    if repos is None:
+        return {"ok": False, "reason": "storage_unavailable"}
+    try:
+        await repos.alert_event.ack(alert_id, principal.user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("异常确认失败：%s", exc)
+    return {"ok": True}
+
+
 @router.post("/anomalies/{alert_id}/ack")
 async def ack_anomaly(
     alert_id: int,
@@ -359,14 +358,7 @@ async def ack_anomaly(
 ) -> dict[str, Any]:
     """``POST /obs/anomalies/{id}/ack``。"""
     _ = payload
-    repos = container.get("repos")
-    if repos is None:
-        return {"ok": False, "reason": "storage_unavailable"}
-    try:
-        await repos.alert_event.ack(alert_id, principal.user_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("异常确认失败：%s", exc)
-    return {"ok": True}
+    return await _ack_alert(alert_id, container, principal)
 
 
 @router.post("/anomalies/{alert_id}/resolve")
@@ -378,14 +370,7 @@ async def resolve_anomaly(
 ) -> dict[str, Any]:
     """``POST /obs/anomalies/{id}/resolve``（ack 的语义别名，保留 note）。"""
     _ = payload
-    repos = container.get("repos")
-    if repos is None:
-        return {"ok": False, "reason": "storage_unavailable"}
-    try:
-        await repos.alert_event.ack(alert_id, principal.user_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("异常解决失败：%s", exc)
-    return {"ok": True}
+    return await _ack_alert(alert_id, container, principal)
 
 
 @router.post("/otel/v1/traces", response_model=None)

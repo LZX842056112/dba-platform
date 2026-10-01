@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+
+from dba.util.time import utcnow_naive
 
 __all__ = [
     "naive_now",
@@ -27,7 +29,7 @@ GLOBAL_SENTINEL = 0
 
 def naive_now() -> datetime:
     """当前 UTC naive 时间（库内一致口径）。"""
-    return datetime.now(UTC).replace(tzinfo=None)
+    return utcnow_naive()
 
 
 def parse_date(value: Any) -> date | None:

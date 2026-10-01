@@ -10,13 +10,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal, require_roles
+from dba.api.v1._common import parse_ts, parse_window
 from dba.di import Container
 
 __all__ = ["router"]
@@ -29,21 +30,6 @@ ADMIN_ROLE_ID = 1
 SUPER_ADMIN_ROLE_ID = 1  # 演示：super_admin 与 admin 同一角色；生产需独立角色
 
 
-def _window(from_: str | None, to: str | None, *, days: int = 30) -> tuple[datetime, datetime]:
-    until = _parse_ts(to) or datetime.now(UTC).replace(tzinfo=None)
-    since = _parse_ts(from_) or (until - timedelta(days=days))
-    return since, until
-
-
-def _parse_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).replace(tzinfo=None)
-    except ValueError:
-        return None
-
-
 @router.get("/cost/summary")
 async def cost_summary(
     container: Annotated[Container, Depends(get_container)],
@@ -53,7 +39,7 @@ async def cost_summary(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /finops/cost/summary``。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(days=30))
     service = container.get("finops_service")
     if service is None:
         return {"total": 0, "by_module": {}, "by_biz_line": {}, "by_model": {}}
@@ -74,7 +60,7 @@ async def cost_timeseries(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /finops/cost/timeseries``。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(days=30))
     service = container.get("finops_service")
     if service is None:
         return {"series": []}
@@ -129,7 +115,7 @@ async def cache_stats(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /finops/cache/stats``。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(days=30))
     service = container.get("finops_service")
     if service is None:
         return {"hit_rate": 0.0, "saved_micro_usd": 0, "by_task": []}
@@ -148,7 +134,7 @@ async def cost_coverage(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /finops/cost/coverage``——计价覆盖率（「成本可信」的第一证据）。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(days=30))
     service = container.get("finops_service")
     if service is None:
         return {"priced_ratio": 0.0, "unpriced_calls": 0, "by_provider": []}
@@ -301,8 +287,8 @@ async def recompute_cost(
 ) -> dict[str, Any]:
     """``POST /finops/cost/recompute``（admin）：价格修正后重算历史成本。"""
     bundle = container.get("finops")
-    start = _parse_ts(payload.get("start"))
-    end = _parse_ts(payload.get("end"))
+    start = parse_ts(payload.get("start"))
+    end = parse_ts(payload.get("end"))
     if bundle is None or start is None or end is None:
         return {"job_id": None, "note": "缺少 start/end 或 finops 未装配"}
     report = await bundle.attributor.recompute(start.date(), end.date())
@@ -412,7 +398,7 @@ async def loop_alerts(
     to: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/loop-alerts``。"""
-    since, until = _window(from_, to)
+    since, until = parse_window(from_, to, span=timedelta(days=30))
     service = container.get("finops_service")
     if service is None:
         return []

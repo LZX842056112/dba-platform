@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
 from dba.di import Container
+from dba.util.time import utcnow_naive as _now
 
 __all__ = ["router"]
 
@@ -56,10 +57,6 @@ class ProgressEmitter:
         if self._publisher is None:
             return
         await self._publisher.publish(self._trace_id, event, data)
-
-
-def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _require_repos(container: Container) -> Any:

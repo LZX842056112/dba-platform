@@ -54,7 +54,7 @@ class MeterAgent:
 
     @traced("step.finops.meter", kind="agent")
     async def run(self, payload: dict[str, Any], ctx: RunContext) -> AgentOutput:
-        window = _window_of(payload)
+        window = _meter_window(payload)
         biz_line_id = payload.get("biz_line_id", ctx.biz_line_id)
         summary = await self.summarize(window[0], window[1], biz_line_id)
         return AgentOutput(
@@ -89,7 +89,7 @@ class MeterAgent:
         return summary
 
 
-def _window_of(payload: dict[str, Any]) -> tuple[datetime, datetime]:
+def _meter_window(payload: dict[str, Any]) -> tuple[datetime, datetime]:
     """解析时间窗（默认近 30 天，UTC naive）。"""
     now = datetime.now(UTC).replace(tzinfo=None)
     until = payload.get("until")
