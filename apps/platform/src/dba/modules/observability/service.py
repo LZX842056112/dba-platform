@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -112,11 +113,11 @@ class ObservabilityService:
         """``alert_event`` + （权威）``anomaly_report``（U14）。"""
         event: dict[str, Any] | None = None
         if self._alerts is not None:
-            rows = await self._alerts.list_events({"limit": 1000})
-            for row in rows:
-                if int(row.get("id", -1)) == alert_id:
-                    event = dict(row)
-                    break
+            try:
+                row = await self._alerts.get(alert_id)
+                event = dict(row) if row is not None else None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("alert_event 查询失败（降级为 null）：%s", exc)
         report: dict[str, Any] | None = None
         if self._reports is not None:
             try:
@@ -188,12 +189,15 @@ class ObservabilityService:
         total_cost = 0
         total_runs = 0
         if self._run is not None:
-            for module in SELF_MODULES:
+            async def _one(module: str) -> tuple[str, dict[str, int]]:
                 rows = await self._runs_of({"module": module, "since": since, "until": until})
                 cost = sum(int(r.get("cost_micro_usd") or 0) for r in rows)
-                by_module[module] = {"cost_micro_usd": cost, "runs": len(rows)}
-                total_cost += cost
-                total_runs += len(rows)
+                return module, {"cost_micro_usd": cost, "runs": len(rows)}
+
+            for module, stat in await asyncio.gather(*(_one(m) for m in SELF_MODULES)):
+                by_module[module] = stat
+                total_cost += stat["cost_micro_usd"]
+                total_runs += stat["runs"]
         return {
             "by_module": by_module,
             "total_cost_micro_usd": total_cost,

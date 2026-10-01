@@ -327,31 +327,27 @@ class LlmCallRepo(_Repo):
         return await self._fetch(stmt)
 
     async def range(self, start: Any, end: Any) -> list[Row]:
-        """按时间窗取明细（供 ``recompute``）。
+        """按 ``created_at`` 半开区间取明细（供 ``recompute``）。
 
-        ★ ``llm_call`` 无时间戳列 → 退回全量（诚实标注，不假装时间窗）。
-        ``by_trace`` 是归因主路径，本方法仅服务于价格重算（worker job）。
+        ``start/end`` 为 ``date``（``end`` 视为排他上界，含整个 end 当天）。
+        ``by_trace`` 是归因主路径，本方法仅服务于价格重算。
         """
-        _ = (start, end)
-        return await self._fetch(sa.select(m.LlmCall.__table__).order_by(m.LlmCall.id.asc()))
+        end_excl = end + dt.timedelta(days=1)
+        stmt = (
+            sa.select(m.LlmCall.__table__)
+            .where(m.LlmCall.created_at >= start, m.LlmCall.created_at < end_excl)
+            .order_by(m.LlmCall.id.asc())
+        )
+        return await self._fetch(stmt)
 
     async def coverage_stats(self, biz_line_id: int | None = None) -> dict[str, Any]:
         """计价覆盖率统计：priced 判定 = 命中价格表（``price_book_id`` 非空）。
 
         ★ ``llm_call`` 无时间戳列，故覆盖率为「全历史」口径（诚实标注，不假装时间窗）。
+        ★ 只做一次 ``GROUP BY provider``，总量由分组求和派生（避免两次全表扫）。
         """
         conds = [m.LlmCall.biz_line_id == biz_line_id] if biz_line_id is not None else []
         priced_case = sa.case((m.LlmCall.price_book_id.isnot(None), 1), else_=0)
-        totals = await self._fetch(
-            sa.select(
-                sa.func.count().label("total"),
-                sa.func.sum(priced_case).label("priced"),
-            )
-            .select_from(m.LlmCall)
-            .where(*conds)
-        )
-        total = int(totals[0]["total"] or 0) if totals else 0
-        priced = int(totals[0]["priced"] or 0) if totals else 0
         by_provider = await self._fetch(
             sa.select(
                 m.LlmCall.provider,
@@ -362,6 +358,8 @@ class LlmCallRepo(_Repo):
             .where(*conds)
             .group_by(m.LlmCall.provider)
         )
+        total = sum(int(r["total"] or 0) for r in by_provider)
+        priced = sum(int(r["priced"] or 0) for r in by_provider)
         return {
             "total": total,
             "priced": priced,
@@ -957,6 +955,11 @@ class AlertEventRepo(_Repo):
     async def insert(self, row: Row) -> int:
         result = await self._execute(sa.insert(m.AlertEvent).values(**row))
         return int(result.inserted_primary_key[0])
+
+    async def get(self, alert_id: int) -> Row | None:
+        return await self._fetch_one(
+            sa.select(m.AlertEvent.__table__).where(m.AlertEvent.id == alert_id)
+        )
 
     async def list_events(self, flt: Row) -> list[Row]:
         stmt = sa.select(m.AlertEvent.__table__)

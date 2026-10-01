@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -54,15 +55,18 @@ async def run_anomaly_scan(
     else:
         scopes.append({})
 
-    total_alerts = 0
-    results: list[dict[str, Any]] = []
-    for extra in scopes:
+    # ★ 各 scope 无共享可变状态 → 并行扫描，避免业务线越多延迟线性增长
+    async def _scan_one(extra: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {"hours": hours, **extra}
         output = await agent.run(payload, run_ctx)
         data = dict(output.data or {})
-        count = int(data.get("alert_count") or 0)
-        total_alerts += count
-        results.append({"scope": extra or {"scope": "GLOBAL"}, "alert_count": count})
+        return {
+            "scope": extra or {"scope": "GLOBAL"},
+            "alert_count": int(data.get("alert_count") or 0),
+        }
+
+    results = list(await asyncio.gather(*(_scan_one(extra) for extra in scopes)))
+    total_alerts = sum(int(r["alert_count"] or 0) for r in results)
 
     logger.info("异常扫描完成 scopes=%d alerts=%d", len(scopes), total_alerts)
     return {"ok": True, "alert_count": total_alerts, "results": results, "hours": hours}

@@ -20,6 +20,7 @@ v1 只信 Redis 快路径的 ``consumed``，从不与 MySQL 权威账本、更�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -146,35 +147,38 @@ async def run_reconcile(
         redis_cache = RedisBudgetCache(redis)
 
     budgets = await _enabled_budgets(container)
-    rows: list[dict[str, Any]] = []
-    mysql_total = 0
-    redis_total = 0
-    redis_successes = 0
-    for budget in budgets:
+    period_date = start.date()
+
+    async def _budget_row(budget: dict[str, Any]) -> dict[str, Any]:
         budget_id = int(budget.get("id") or 0)
-        usage = await repos.budget_usage.get(budget_id, start.date())
+        usage = await repos.budget_usage.get(budget_id, period_date)
         mysql_consumed = int((usage or {}).get("consumed_micro_usd", 0) or 0)
-        mysql_total += mysql_consumed
 
         redis_consumed = 0
+        redis_ok = False
         if redis_cache is not None:
             try:
                 redis_usage: dict[str, int] = await redis_cache.usage(budget_id, period_start_iso)
                 redis_consumed = int(redis_usage.get("consumed", 0))
-                redis_successes += 1
+                redis_ok = True
             except Exception as exc:  # noqa: BLE001 - Redis 挂了不阻断对账（该方剔除并标注）
                 logger.warning("读取 Redis 用量失败 budget_id=%s：%s", budget_id, exc)
-        redis_total += redis_consumed
+        return {
+            "budget_id": budget_id,
+            "scope_type": budget.get("scope_type"),
+            "scope_id": budget.get("scope_id"),
+            "mysql_consumed_micro_usd": mysql_consumed,
+            "redis_consumed_micro_usd": redis_consumed,
+            "_redis_ok": redis_ok,
+        }
 
-        rows.append(
-            {
-                "budget_id": budget_id,
-                "scope_type": budget.get("scope_type"),
-                "scope_id": budget.get("scope_id"),
-                "mysql_consumed_micro_usd": mysql_consumed,
-                "redis_consumed_micro_usd": redis_consumed,
-            }
-        )
+    # ★ 逐预算并行读 MySQL + Redis（消除 N+1 串行往返）
+    rows = list(await asyncio.gather(*(_budget_row(b) for b in budgets)))
+    mysql_total = sum(int(r["mysql_consumed_micro_usd"] or 0) for r in rows)
+    redis_total = sum(int(r["redis_consumed_micro_usd"] or 0) for r in rows)
+    redis_successes = sum(1 for r in rows if r["_redis_ok"])
+    for r in rows:
+        r.pop("_redis_ok", None)
 
     # ★ Redis 一方仅在「可用且读取完整」时纳入比较：否则把 0 当成真实用量会造出
     #   100% 的假漂移（Redis 一挂就天天误报），并使 DoD#4 的 1% 判据失去意义。

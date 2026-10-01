@@ -104,6 +104,7 @@ class OutboxDispatcher:
         rows = await self._outbox.claim(limit=self._batch)
         done = 0
         failed = 0
+        done_ids: list[int] = []
         for row in rows:
             outbox_id = int(row["id"])
             kind = str(row["kind"])
@@ -120,9 +121,12 @@ class OutboxDispatcher:
                 await self._fail(outbox_id, kind, payload, str(exc), attempts)
                 failed += 1
                 continue
-            await self._outbox.mark_done([outbox_id])
+            done_ids.append(outbox_id)
             self.dispatched_total += 1
             done += 1
+        # ★ 成功的一批一次 UPDATE（不再逐条 mark_done）
+        if done_ids:
+            await self._outbox.mark_done(done_ids)
         return {"claimed": len(rows), "done": done, "failed": failed}
 
     async def _fail(
