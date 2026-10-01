@@ -847,8 +847,11 @@ class MetricDailyRepo(_Repo):
         async with self._engine.begin() as conn:
             for row in rows:
                 stmt = mysql_insert(m.MetricDaily).values(**row)
+                # ★ 用显式 VALUES(col)：SQLAlchemy 的 ``stmt.inserted`` 在 MySQL 8.4 下
+                #   会生成 ``AS new`` + ``new.col``，但别名缺失 → 报
+                #   "Unknown column 'new.p50_latency_ms' in 'field list'"（实测）。
                 update_cols = {
-                    c.name: stmt.inserted[c.name]
+                    c.name: sa.text(f"VALUES({c.name})")
                     for c in m.MetricDaily.__table__.columns
                     if c.name not in {"stat_date", "biz_line_id", "agent_uid", "model"}
                 }
