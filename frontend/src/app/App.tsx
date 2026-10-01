@@ -1,9 +1,15 @@
-// 应用根：Provider 装配 + 外壳布局（§9.1 app/App.tsx）。
+// 应用根：Provider 装配 + 外壳布局 + 顶部导航（对话 / 观测 / FinOps）。
 
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, NavLink } from 'react-router-dom';
+import { AppRoutes } from './routes';
 import { AuthProvider } from './providers/AuthProvider';
 import { QueryProvider } from './providers/QueryProvider';
-import { AppRoutes } from './routes';
+
+const NAV = [
+  { to: '/', label: '对话' },
+  { to: '/observability', label: '观测' },
+  { to: '/finops', label: 'FinOps' },
+];
 
 export function App() {
   return (
@@ -13,7 +19,20 @@ export function App() {
           <div className="app-shell">
             <header className="app-header">
               <strong>数据大屏 · 多 Agent 平台</strong>
-              <span className="dim">ChatBI 最小集（对话 → 七步流水线 → 出图）</span>
+              <nav style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+                {NAV.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    className={({ isActive }) =>
+                      isActive ? 'nav-link nav-link--active' : 'nav-link'
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                ))}
+              </nav>
             </header>
             <main className="app-main">
               <AppRoutes />

@@ -215,3 +215,17 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+/* ── 顶部导航 ───────────────────────────────────────────── */
+.nav-link {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  font-size: 13px;
+}
+
+.nav-link--active {
+  color: #7ef0ff;
+  background: rgba(34, 211, 238, 0.12);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+}

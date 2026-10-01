@@ -60,4 +60,6 @@ export const api = {
   get: <T>(path: string, traceId?: string): Promise<T> => apiFetch<T>(path, {}, traceId),
   post: <T>(path: string, body: unknown, traceId?: string): Promise<T> =>
     apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) }, traceId),
+  patch: <T>(path: string, body: unknown, traceId?: string): Promise<T> =>
+    apiFetch<T>(path, { method: 'PATCH', body: JSON.stringify(body) }, traceId),
 };
