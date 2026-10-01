@@ -597,7 +597,7 @@ class BudgetRepo(_Repo):
         )
         return await self._fetch_one(stmt)
 
-    async def by_id(self, budget_id: int) -> Row | None:
+    async def get(self, budget_id: int) -> Row | None:
         return await self._fetch_one(sa.select(m.Budget.__table__).where(m.Budget.id == budget_id))
 
     async def upsert(self, row: Row) -> int:

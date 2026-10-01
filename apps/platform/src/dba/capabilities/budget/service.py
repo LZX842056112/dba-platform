@@ -217,7 +217,7 @@ class BudgetService:
 
         ★ 直接用 id 定位（而非 ``resolve`` 的 scope 匹配），因为该端点按 id 寻址。
         """
-        row = await self._budgets.by_id(budget_id)
+        row = await self._budgets.get(budget_id)
         if row is None:
             return None
         tz = str(row.get("timezone", "Asia/Shanghai"))
