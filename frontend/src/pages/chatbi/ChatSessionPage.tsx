@@ -1,6 +1,7 @@
 // 对话页（最小主链路）：输入 → SSE 流 → 进度/自愈提示 → 逐面板出图。
 // 对齐《设计方案 v2》§9.1 页面落位与 §9.3 事件渲染。
 
+import { CockpitFrame } from '../../features/dashboard/components/CockpitFrame';
 import { DashboardGrid } from '../../features/dashboard/components/DashboardGrid';
 import { NarrationPanel } from '../../features/chat/components/NarrationPanel';
 import { QueryBar } from '../../features/chat/components/QueryBar';
@@ -46,8 +47,11 @@ export function ChatSessionPage() {
       </section>
 
       <section className="panel">
+        {/* ★ 此 `.panel-title` 是浏览器 e2e 断言（≥2）的依赖，勿移除 */}
         <div className="panel-title">数据大屏</div>
-        <DashboardGrid panels={ordered} layout={layout} dataSources={dataSources} />
+        <CockpitFrame title="经营数据驾驶舱" count={ordered.length}>
+          <DashboardGrid panels={ordered} layout={layout} dataSources={dataSources} />
+        </CockpitFrame>
       </section>
     </div>
   );

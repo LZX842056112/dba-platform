@@ -68,6 +68,32 @@ npm run gen:api      # 由后端 OpenAPI 生成 src/types/api.d.ts（U27）
    （面板只带 `dataset.ref`）。★ 门槛用终态而非 `dashboard.spec.ready`：后者在流水线中途就到达，
    此时后端尚未落库 → 会拿到空 spec → 图表恒「暂无数据」。
 
+## 驾驶舱能力（面板类型与图表）
+
+| `panel.kind` | 渲染 | 关键 `style` |
+|---|---|---|
+| `chart` | `EchartsBase`（深色主题 `dba-dark`） | 见下表 |
+| `metric_card` | 指标卡；`variant="flip"` 触发**数字翻牌动画** | `unit` `trend` `trendValue` |
+| `ranking` | 排行榜（名次 + 名称 + 进度条 + 数值） | `sort` `topN` |
+| `table` / `text` | 明细表 / 文本 | — |
+
+`chart.type` ∈ `line | bar | pie | scatter | map | gauge`，配置一律走 `panel.style`：
+
+| type | 形态与要点 |
+|---|---|
+| `map` | 中国地图 choropleth（`registerMap` + `geoIndex`）；`style.mapScatter` 叠加涟漪散点（需 `encoding.lon/lat`） |
+| `gauge` | 仪表盘；`style.gaugeMax` / `gaugeTarget`（目标线） |
+| `pie` | `style.pieVariant ∈ {pie, donut, rose, ring}` |
+| `bar` | `style.orientation="horizontal"` 条形排行；`stack` 堆叠；`showBackground` 进度条底 |
+| `line` | `style.area` 面积图；`stack` 堆叠面积 |
+| `scatter` | `encoding.size` 控制气泡大小 |
+
+**深色主题**：`lib/echartsTheme.ts` 注册 `dba-dark`，`EchartsBase` 默认启用（此前用 ECharts 默认浅色主题，深底上文字几乎不可读）。
+
+**地图合规**：GeoJSON 随仓库内置（`src/assets/geo/`，含 34 省级 + 九段线），**懒加载**（582KB 不进主包）；来源与领土完整性校验见该目录 `README.md`。
+
+**健壮性**：`PanelErrorBoundary` 保证单个面板渲染异常只降级该面板，**不会整页白屏**。
+
 ## 未实现 / 未验证（如实标注）
 
 - **未实现（P2）**：观测页、FinOps 页、语义管理页、技能页；`mode='s3'` 数据源的前端预签名直拉（§9.5 硬约定 2）。

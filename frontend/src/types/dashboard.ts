@@ -2,7 +2,7 @@
 // schema_version 必填：前端按版本做兼容分支。
 
 export type ChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'map' | 'gauge';
-export type PanelKind = 'chart' | 'metric_card' | 'table' | 'text';
+export type PanelKind = 'chart' | 'metric_card' | 'table' | 'text' | 'ranking';
 export type FieldType = 'time' | 'number' | 'string' | 'boolean';
 export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'none';
 
@@ -17,6 +17,49 @@ export interface Encoding {
   y?: EncodingField[];
   series?: EncodingField;
   color?: EncodingField | null;
+  lon?: EncodingField | null; // 地图散点经度
+  lat?: EncodingField | null; // 地图散点纬度
+  size?: EncodingField | null; // 气泡大小
+}
+
+export interface ChartSpec {
+  type: ChartType;
+  region?: string; // map 用：已注册的地图名，默认 'china'
+}
+
+/** 面板样式（与后端 `PanelStyle` 对齐；后端 extra=allow，故带索引签名）。 */
+export interface PanelStyle {
+  // 通用
+  palette?: string; // neon | cyan | aurora
+  legend?: 'top' | 'bottom' | 'none';
+  unit?: string;
+  precision?: number;
+  accent?: string;
+  grid?: boolean;
+  // 序列类
+  stack?: boolean;
+  area?: boolean;
+  smooth?: boolean;
+  sort?: 'none' | 'asc' | 'desc';
+  topN?: number;
+  showBackground?: boolean;
+  orientation?: 'vertical' | 'horizontal';
+  // 饼 / 环 / 玫瑰
+  pieVariant?: 'pie' | 'donut' | 'rose' | 'ring';
+  innerRadius?: number;
+  // 仪表盘
+  gaugeMax?: number;
+  gaugeTarget?: number;
+  // 地图
+  mapScatter?: boolean;
+  mapZoom?: number;
+  // KPI 卡
+  variant?: 'plain' | 'flip' | 'neon';
+  trend?: 'up' | 'down' | 'flat';
+  trendValue?: number;
+  animate?: boolean;
+  compare?: string;
+  [key: string]: unknown;
 }
 
 export interface LayoutItem {
@@ -61,7 +104,7 @@ export interface PanelSpec {
   kind: PanelKind;
   title?: string;
   subtitle?: string;
-  chart?: { type: ChartType };
+  chart?: ChartSpec;
   encoding?: Encoding;
   dataset?: { ref: string };
   query?: {
@@ -70,13 +113,7 @@ export interface PanelSpec {
     scope_hash?: string;
   };
   interaction?: { linked?: boolean; drilldown?: string };
-  style?: {
-    palette?: string;
-    legend?: 'top' | 'bottom' | 'none';
-    stack?: boolean;
-    unit?: string;
-    compare?: string;
-  };
+  style?: PanelStyle;
   text?: string;
 }
 

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from typing import Any
 
 from dba_runtime.agent import AgentOutput
@@ -21,6 +22,11 @@ from dba_runtime.telemetry import traced
 from ..executor import QueryExecutor
 
 __all__ = ["SqlExecAgent", "columns_from_rows"]
+
+logger = logging.getLogger("dba.modules.chatbi.sql_exec")
+
+#: 主查询的数据源引用（与 spec_builder 的 DEFAULT_REF 对齐）
+_PRIMARY_REF = "q1"
 
 
 def columns_from_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -62,6 +68,14 @@ class SqlExecAgent:
         effective = dataclasses.replace(ctx, scope_hash=scope_hash) if scope_hash else ctx
         rows, meta = await self._executor.execute(sql, effective, scope, max_rows=max_rows)
 
+        # ★ 多查询：主查询之外的 ref 逐条执行（**同一条 QueryExecutor**，护栏全覆盖）。
+        #   无 ``queries`` 时只返回主结果，单查询路径行为与改动前完全一致。
+        query_results: dict[str, dict[str, Any]] = {
+            _PRIMARY_REF: {"rows": rows, "columns": columns_from_rows(rows)}
+        }
+        for extra in await self._run_extra_queries(payload, effective, scope, max_rows):
+            query_results.update(extra)
+
         if ctx.emitter is not None:
             await ctx.emitter.emit(
                 "sql.executed",
@@ -70,6 +84,7 @@ class SqlExecAgent:
                     "exec_ms": meta["exec_ms"],
                     "scope_injected": meta["scope_injected"],
                     "truncated": meta["truncated"],  # ★ 超 max_rows 是截断，不是静默丢行
+                    "query_count": len(query_results),
                 },
             )
         return AgentOutput(
@@ -78,5 +93,36 @@ class SqlExecAgent:
                 "row_count": meta["row_count"],
                 "columns": columns_from_rows(rows),
                 "truncated": meta["truncated"],
+                "query_results": query_results,
             }
         )
+
+    async def _run_extra_queries(
+        self,
+        payload: dict[str, Any],
+        ctx: RunContext,
+        scope: Any,
+        max_rows: int,
+    ) -> list[dict[str, dict[str, Any]]]:
+        """执行主查询之外的附加查询；单条失败只跳过该条，不影响主链路。"""
+        queries = payload.get("queries")
+        if not isinstance(queries, list) or len(queries) < 2:
+            return []
+        out: list[dict[str, dict[str, Any]]] = []
+        for item in queries:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("ref") or "")
+            extra_sql = str(item.get("sql") or "")
+            if not ref or not extra_sql or ref == _PRIMARY_REF:
+                continue
+            try:
+                extra_rows, _ = await self._executor.execute(
+                    extra_sql, ctx, scope, max_rows=max_rows
+                )
+            except Exception as exc:  # noqa: BLE001 - 附加查询失败不该打挂整条流水线
+                logger.warning("附加查询 ref=%s 执行失败，已跳过：%s", ref, exc)
+                out.append({ref: {"rows": [], "columns": []}})
+                continue
+            out.append({ref: {"rows": extra_rows, "columns": columns_from_rows(extra_rows)}})
+        return out

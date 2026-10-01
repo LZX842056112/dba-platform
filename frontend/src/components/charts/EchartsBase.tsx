@@ -10,7 +10,7 @@
 //   正确做法：记录本次绑定的 **(event, fn) 对**，按对精确解绑。
 
 import { useEffect, useRef } from 'react';
-import { echarts, type EChartsCoreOption } from '../../lib/echarts';
+import { DBA_DARK_THEME_NAME, echarts, type EChartsCoreOption } from '../../lib/echarts';
 
 type EChartsInstance = ReturnType<typeof echarts.init>;
 export type EChartsEventHandler = (params: unknown) => void;
@@ -20,17 +20,24 @@ interface Props {
   /** 容器高度（number → px；string → 原样，如 '100%'）。 */
   height?: number | string;
   onEvents?: Record<string, EChartsEventHandler>;
+  /** ECharts 主题名（默认深色 'dba-dark'，见 lib/echartsTheme.ts）。 */
+  theme?: string;
 }
 
-export function EchartsBase({ option, height = '100%', onEvents }: Props) {
+export function EchartsBase({
+  option,
+  height = '100%',
+  onEvents,
+  theme = DBA_DARK_THEME_NAME,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<EChartsInstance | null>(null);
 
-  // 初始化 / 销毁：只跑一次
+  // 初始化 / 销毁：theme 变化时重建实例（主题只能在 init 时指定）
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    instanceRef.current = echarts.init(container, undefined, { renderer: 'canvas' });
+    instanceRef.current = echarts.init(container, theme, { renderer: 'canvas' });
     const observer = new ResizeObserver(() => instanceRef.current?.resize());
     observer.observe(container);
     return () => {
@@ -38,7 +45,7 @@ export function EchartsBase({ option, height = '100%', onEvents }: Props) {
       instanceRef.current?.dispose();
       instanceRef.current = null;
     };
-  }, []);
+  }, [theme]);
 
   // ★ notMerge:false —— 增量更新，避免流式出图时闪烁
   useEffect(() => {

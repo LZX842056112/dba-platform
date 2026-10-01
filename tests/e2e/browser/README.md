@@ -47,9 +47,9 @@ DBA_E2E_BROWSER=1 uv run pytest tests/e2e/test_browser_e2e.py -v
 | V5 | 主页双栏 | `.panel-title` ≥ 2（对话 / 数据大屏） |
 | V7 | **七步进度全绿** | `.step-list .badge--done` == **7** |
 | V10 | SQL 折叠区 | 文本含 `fact_sales` 与 `gmv_ex_tax` |
-| V11 | 大屏面板 | `.panel-card` ≥ 1 且标题含 `GMV` |
+| V11 | 大屏面板 | `.panel-card` ≥ 1 且标题含 `GMV`（演示驾驶舱实际 **10 个**面板） |
 | V12 | 结论解读 | `.bubble` 有内容（流式渲染完成） |
-| V13 | **图表真实渲染** | `.panel-card canvas` ≥ 1（ECharts 已用真实行数据绘制） |
+| V13 | **图表真实渲染** | `.panel-card canvas` ≥ 1（演示驾驶舱实际 **5 个**：地图/环形/仪表盘/堆叠柱/趋势；4 个 KPI 与排行榜为 HTML） |
 | T8 | 大屏落库 | `GET /dashboards/{id}` 返回 panels ≥ 1 且 `data_sources[].rows` ≥ 1 |
 
 ## 踩过的坑（改动本套时务必留意）

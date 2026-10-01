@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -157,19 +158,198 @@ class DemoLLMClient:
     def _text(self, messages: list[dict[str, Any]]) -> str:
         task = self._task(messages)
         if task == "sql":
-            return (
-                "```sql\nSELECT dt, SUM(gmv_ex_tax) AS gmv\n"
-                "FROM fact_sales\nWHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)\n"
-                "GROUP BY dt\nORDER BY dt\nLIMIT 500\n```"
+            # ★ 多查询信封：q1 为主查询（保 SQL 面板与 e2e 断言），q2~q5 供其它面板取数。
+            #   全部单语句只读、结果 ≤500 行（否则会走 s3，而前端暂不拉 s3）。
+            return json.dumps(
+                {"sql": self._DEMO_QUERIES[0]["sql"], "queries": list(self._DEMO_QUERIES)},
+                ensure_ascii=False,
             )
         if task == "visual":
-            return (
-                '{"panels": [{"panel_id": "p1", "kind": "chart", "title": "GMV 趋势",'
-                ' "subtitle": "不含税口径", "chart": {"type": "line"},'
-                ' "encoding": {"x": {"field": "dt", "type": "time"},'
-                ' "y": [{"field": "gmv", "agg": "sum"}]}}]}'
-            )
+            return json.dumps({"panels": self._demo_panels()}, ensure_ascii=False)
         return "（演示结论）近 30 天 GMV 呈上升趋势；本项目 GMV 为支付口径、不含税。"
+
+    #: 演示模板查询（ref 与面板 `dataset.ref` 对应）
+    _DEMO_QUERIES: tuple[dict[str, str], ...] = (
+        {
+            "ref": "q1",
+            "sql": (
+                "SELECT dt, SUM(gmv_ex_tax) AS gmv FROM fact_sales "
+                "WHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+                "GROUP BY dt ORDER BY dt LIMIT 500"
+            ),
+        },
+        {
+            "ref": "q2",
+            "sql": (
+                "SELECT province_name AS province, SUM(gmv_ex_tax) AS gmv, "
+                "MAX(lat) AS lat, MAX(lon) AS lon FROM fact_sales "
+                "WHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+                "GROUP BY province_name ORDER BY gmv DESC LIMIT 500"
+            ),
+        },
+        {
+            "ref": "q3",
+            "sql": (
+                "SELECT category_name AS category, SUM(gmv_ex_tax) AS gmv, "
+                "SUM(order_cnt) AS orders FROM fact_sales "
+                "WHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+                "GROUP BY category_name ORDER BY gmv DESC LIMIT 500"
+            ),
+        },
+        {
+            "ref": "q4",
+            "sql": (
+                "SELECT dt, channel, SUM(gmv_ex_tax) AS gmv FROM fact_sales "
+                "WHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) "
+                "GROUP BY dt, channel ORDER BY dt LIMIT 500"
+            ),
+        },
+        {
+            "ref": "q5",
+            "sql": (
+                "SELECT SUM(gmv_ex_tax) AS gmv, SUM(order_cnt) AS orders, "
+                "SUM(profit_ex_tax) AS profit, SUM(uv) AS uv, "
+                "ROUND(SUM(profit_ex_tax) / NULLIF(SUM(gmv_ex_tax), 0) * 100, 2) "
+                "AS gross_margin FROM fact_sales "
+                "WHERE dt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)"
+            ),
+        },
+    )
+
+    @staticmethod
+    def _demo_panels() -> list[dict[str, Any]]:
+        """演示驾驶舱：4 个翻牌 KPI + 地图 + 环形占比 + 仪表盘 + 排行 + 堆叠柱 + 趋势。"""
+        return [
+            {
+                "panel_id": "kpi_gmv",
+                "kind": "metric_card",
+                "title": "GMV 总额",
+                "subtitle": "近 30 天 · 不含税",
+                "dataset": {"ref": "q5"},
+                "encoding": {"y": [{"field": "gmv", "agg": "sum"}]},
+                "style": {
+                    "variant": "flip",
+                    "unit": "元",
+                    "trend": "up",
+                    "trendValue": 12.4,
+                },
+            },
+            {
+                "panel_id": "kpi_orders",
+                "kind": "metric_card",
+                "title": "订单量",
+                "subtitle": "近 30 天",
+                "dataset": {"ref": "q5"},
+                "encoding": {"y": [{"field": "orders", "agg": "sum"}]},
+                "style": {"variant": "flip", "unit": "笔", "trend": "up", "trendValue": 6.8},
+            },
+            {
+                "panel_id": "kpi_profit",
+                "kind": "metric_card",
+                "title": "毛利额",
+                "subtitle": "近 30 天",
+                "dataset": {"ref": "q5"},
+                "encoding": {"y": [{"field": "profit", "agg": "sum"}]},
+                "style": {"variant": "flip", "unit": "元", "trend": "up", "trendValue": 3.2},
+            },
+            {
+                "panel_id": "kpi_uv",
+                "kind": "metric_card",
+                "title": "访客数",
+                "subtitle": "近 30 天",
+                "dataset": {"ref": "q5"},
+                "encoding": {"y": [{"field": "uv", "agg": "sum"}]},
+                "style": {"variant": "flip", "unit": "人", "trend": "down", "trendValue": 1.5},
+            },
+            {
+                "panel_id": "map_province",
+                "kind": "chart",
+                "title": "省份销售分布",
+                "subtitle": "近 30 天 GMV",
+                "dataset": {"ref": "q2"},
+                "chart": {"type": "map", "region": "china"},
+                "encoding": {
+                    "x": {"field": "province", "type": "string"},
+                    "y": [{"field": "gmv", "agg": "sum"}],
+                    "lon": {"field": "lon"},
+                    "lat": {"field": "lat"},
+                },
+                "style": {"mapScatter": True, "mapZoom": 1},
+                "w": 8,
+                "h": 16,
+            },
+            {
+                "panel_id": "pie_category",
+                "kind": "chart",
+                "title": "品类结构",
+                "subtitle": "GMV 占比",
+                "dataset": {"ref": "q3"},
+                "chart": {"type": "pie"},
+                "encoding": {
+                    "x": {"field": "category", "type": "string"},
+                    "y": [{"field": "gmv", "agg": "sum"}],
+                },
+                "style": {"pieVariant": "donut", "sort": "desc", "legend": "bottom"},
+                "w": 4,
+                "h": 8,
+            },
+            {
+                "panel_id": "gauge_margin",
+                "kind": "chart",
+                "title": "毛利率",
+                "subtitle": "近 30 天",
+                "dataset": {"ref": "q5"},
+                "chart": {"type": "gauge"},
+                "encoding": {"y": [{"field": "gross_margin", "agg": "none"}]},
+                "style": {"gaugeMax": 30},
+                "w": 4,
+                "h": 8,
+            },
+            {
+                "panel_id": "rank_province",
+                "kind": "ranking",
+                "title": "省份销售排行",
+                "dataset": {"ref": "q2"},
+                "encoding": {
+                    "x": {"field": "province", "type": "string"},
+                    "y": [{"field": "gmv", "agg": "sum"}],
+                },
+                "style": {"sort": "desc", "topN": 8},
+                "w": 4,
+                "h": 12,
+            },
+            {
+                "panel_id": "bar_channel",
+                "kind": "chart",
+                "title": "渠道销售堆叠",
+                "subtitle": "按日",
+                "dataset": {"ref": "q4"},
+                "chart": {"type": "bar"},
+                "encoding": {
+                    "x": {"field": "dt", "type": "time"},
+                    "y": [{"field": "gmv", "agg": "sum"}],
+                    "series": {"field": "channel"},
+                },
+                "style": {"stack": True, "legend": "top"},
+                "w": 4,
+                "h": 12,
+            },
+            {
+                "panel_id": "line_gmv",
+                "kind": "chart",
+                "title": "GMV 趋势",
+                "subtitle": "近 30 天 · 不含税口径",
+                "dataset": {"ref": "q1"},
+                "chart": {"type": "line"},
+                "encoding": {
+                    "x": {"field": "dt", "type": "time"},
+                    "y": [{"field": "gmv", "agg": "sum"}],
+                },
+                "style": {"area": True, "smooth": True},
+                "w": 4,
+                "h": 12,
+            },
+        ]
 
     async def complete(
         self,

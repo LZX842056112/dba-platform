@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -20,7 +21,7 @@ from dba_runtime.telemetry import traced
 
 from ..prompts import load_prompt
 
-__all__ = ["SqlGeneratorAgent", "extract_sql"]
+__all__ = ["SqlGeneratorAgent", "extract_sql", "parse_sql_payload"]
 
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _SQL_START = re.compile(r"\b(select|with)\b", re.IGNORECASE)
@@ -36,6 +37,47 @@ def extract_sql(text: str) -> str:
     if match:
         return raw[match.start() :].strip().rstrip(";").strip()
     return raw.rstrip(";").strip()
+
+
+def _strip_fence(text: str) -> str:
+    """剥离 ```json 围栏，取第一个 ``{`` 起始的块。"""
+    if "```" not in text:
+        return text
+    for part in text.split("```"):
+        candidate = part.strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+        if candidate.startswith("{"):
+            return candidate
+    return text
+
+
+def parse_sql_payload(text: str) -> tuple[str, list[dict[str, Any]] | None]:
+    """解析模型输出 → ``(主 SQL, 多查询列表或 None)``。
+
+    支持两种形态：① **多查询信封** ``{"sql": "...", "queries": [{"ref","sql"}, ...]}``；
+    ② 裸 SQL（或 ```sql 围栏）——此时 ``queries`` 为 ``None``，走原有单查询路径。
+    """
+    candidate = _strip_fence((text or "").strip())
+    if candidate.startswith("{"):
+        obj: Any = None
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    obj = json.loads(candidate[start : end + 1])
+                except json.JSONDecodeError:
+                    obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("queries"), list):
+            queries = [
+                dict(q) for q in obj["queries"] if isinstance(q, dict) and str(q.get("sql") or "")
+            ]
+            if queries:
+                sql = str(obj.get("sql") or queries[0]["sql"])
+                return sql, queries
+    return extract_sql(text), None
 
 
 class SqlGeneratorAgent:
@@ -58,7 +100,7 @@ class SqlGeneratorAgent:
 
         choice = await self._router.route(task="sql_gen", ctx=ctx)
         result = await self._router.chat(messages, choice, ctx)
-        sql = extract_sql(str(result.text))
+        sql, queries = parse_sql_payload(str(result.text))
 
         if ctx.emitter is not None:
             await ctx.emitter.emit(
@@ -69,7 +111,10 @@ class SqlGeneratorAgent:
                     "model": choice.model,
                 },
             )
-        return AgentOutput(data={"sql": sql}, confidence=self._confidence(result))
+        data: dict[str, Any] = {"sql": sql}
+        if queries:
+            data["queries"] = queries
+        return AgentOutput(data=data, confidence=self._confidence(result))
 
     # ── 消息构造 ─────────────────────────────────────────────────
     @staticmethod

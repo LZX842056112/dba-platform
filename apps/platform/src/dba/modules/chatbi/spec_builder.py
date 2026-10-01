@@ -33,6 +33,7 @@ from dba.schemas.dashboard import (
     LayoutItem,
     Panel,
     PanelQuery,
+    PanelStyle,
     SpecMeta,
 )
 
@@ -42,9 +43,30 @@ logger = logging.getLogger("dba.modules.chatbi.spec_builder")
 
 #: 内联行数阈值（超过则改走 s3）
 INLINE_ROW_THRESHOLD = 500
-#: 每个面板占位（栅格 12 列；默认两列布局）
+#: 无 `dataset.ref` 时的默认数据源引用
+DEFAULT_REF = "q1"
+#: 单面板兜底尺寸（12 列栅格）
 _PANEL_W = 6
 _PANEL_H = 8
+
+#: 驾驶舱默认栅格预设 (x, y, w, h) —— 面板未自带坐标时按序号取用。
+#: 版式：一行 4 个 KPI → 大地图 + 右侧两块 → 底部三块。
+_COCKPIT_LAYOUT: tuple[tuple[int, int, int, int], ...] = (
+    (0, 0, 3, 5),  # KPI 1
+    (3, 0, 3, 5),  # KPI 2
+    (6, 0, 3, 5),  # KPI 3
+    (9, 0, 3, 5),  # KPI 4
+    (0, 5, 8, 16),  # 地图（大）
+    (8, 5, 4, 8),  # 环形占比
+    (8, 13, 4, 8),  # 仪表盘
+    (0, 21, 4, 12),  # 排行榜
+    (4, 21, 4, 12),  # 堆叠柱
+    (8, 21, 4, 12),  # 趋势
+)
+
+#: 合法的面板种类与图表类型（用于白名单降级，避免未知值崩掉整个 visual 步骤）
+_PANEL_KINDS = frozenset({"chart", "metric_card", "table", "text", "ranking"})
+_CHART_TYPES = frozenset({"line", "bar", "pie", "scatter", "map", "gauge"})
 
 
 class DashboardSpecBuilder:
@@ -88,15 +110,18 @@ class DashboardSpecBuilder:
 
         无可用的对象存储时**保持 s3 标注但不签发 URL**并记警告——绝不假装成功，
         也绝不把大结果偷偷内联（那会占满应用内存）。
+
+        ★ 按 ``source.ref`` 取对应查询结果：多查询场景下每个数据源的行集不同，
+        此前对所有源都上传 ``payload["rows"]`` 是错的。
         """
-        rows: list[dict[str, Any]] = list(payload.get("rows") or [])
-        columns: list[dict[str, str]] = list(payload.get("columns") or [])
+        results = self._query_results(payload)
         for source in spec.data_sources:
             if source.mode != "s3" or source.presigned_url:
                 continue
             if self._object_store is None:
                 logger.warning("需 s3 数据源但对象存储不可用，object_key=%s", source.object_key)
                 continue
+            rows, columns = results.get(source.ref, ([], []))
             key = source.object_key or f"{spec.dashboard_id}/{source.ref}.json"
             body = json.dumps(
                 {"columns": columns, "rows": rows}, ensure_ascii=False, default=str
@@ -115,30 +140,77 @@ class DashboardSpecBuilder:
         return spec
 
     # ── 内部：组装 ───────────────────────────────────────────────
+    def _query_results(
+        self, payload: dict[str, Any]
+    ) -> dict[str, tuple[list[dict[str, Any]], list[dict[str, str]]]]:
+        """归一化「多查询结果」为 ``{ref: (rows, columns)}``。
+
+        有 ``payload["query_results"]``（多查询）则逐 ref 取用；
+        否则回退到单查询（``payload["rows"]/["columns"]`` → ``DEFAULT_REF``），
+        **保证单查询路径行为完全不变**。
+        """
+        raw = payload.get("query_results")
+        if isinstance(raw, dict) and raw:
+            out: dict[str, tuple[list[dict[str, Any]], list[dict[str, str]]]] = {}
+            for ref, item in raw.items():
+                if not isinstance(item, dict):
+                    continue
+                rows = list(item.get("rows") or [])
+                columns = item.get("columns") or self._columns_from_rows(rows)
+                out[str(ref)] = (rows, columns)
+            if out:
+                return out
+        rows = list(payload.get("rows") or [])
+        columns = payload.get("columns") or self._columns_from_rows(rows)
+        return {DEFAULT_REF: (rows, columns)}
+
+    @staticmethod
+    def _layout_for(idx: int, raw: dict[str, Any]) -> tuple[int, int, int, int]:
+        """面板栅格位置：``raw`` 显式给的就用，否则按驾驶舱预设兜底。"""
+        preset = _COCKPIT_LAYOUT[idx % len(_COCKPIT_LAYOUT)]
+        x = int(raw["x"]) if raw.get("x") is not None else preset[0]
+        y = int(raw["y"]) if raw.get("y") is not None else preset[1]
+        w = int(raw.get("w") or preset[2])
+        h = int(raw.get("h") or preset[3])
+        return x, y, w, h
+
     def _assemble(
         self,
         payload: dict[str, Any],
         panel_dicts: list[dict[str, Any]],
         ctx: RunContext | None,
     ) -> DashboardSpec:
-        rows: list[dict[str, Any]] = list(payload.get("rows") or [])
-        columns = payload.get("columns") or self._columns_from_rows(rows)
         scope_hash = payload.get("scope_hash")
         biz_line_id = payload.get("biz_line_id")
         metric_codes = list(payload.get("metric_codes") or [])
+        results = self._query_results(payload)
 
         panels: list[Panel] = []
         items: list[LayoutItem] = []
         for idx, raw in enumerate(panel_dicts):
             panel_id = str(raw.get("panel_id") or f"p{idx + 1}")
-            x = (idx % 2) * _PANEL_W
-            y = (idx // 2) * _PANEL_H
-            items.append(LayoutItem(i=panel_id, x=x, y=y, w=_PANEL_W, h=_PANEL_H, minW=3, minH=5))
-            panels.append(
-                self._panel(panel_id, raw, {"ref": "q1"}, metric_codes, biz_line_id, scope_hash)
-            )
+            x, y, w, h = self._layout_for(idx, raw)
+            items.append(LayoutItem(i=panel_id, x=x, y=y, w=w, h=h, minW=3, minH=5))
+            dataset = dict(raw.get("dataset") or {"ref": DEFAULT_REF})
+            try:
+                panels.append(
+                    self._panel(panel_id, raw, dataset, metric_codes, biz_line_id, scope_hash)
+                )
+            except Exception as exc:  # noqa: BLE001 - 单面板配置错误绝不打断整个 visual 步骤
+                logger.warning("面板 %s 配置无效，降级为文本面板：%s", panel_id, exc)
+                panels.append(
+                    Panel(
+                        panel_id=panel_id,
+                        kind="text",
+                        title=str(raw.get("title") or panel_id),
+                        text="面板配置无效，已降级展示。",
+                    )
+                )
 
-        source = self._data_source(rows, columns, payload)
+        sources = [
+            self._data_source(ref, rows, columns, payload)
+            for ref, (rows, columns) in results.items()
+        ]
         trace_id = ctx.trace_id if ctx is not None else str(payload.get("trace_id") or "")
         return DashboardSpec(
             dashboard_id="dsh_" + new_ulid(),
@@ -146,10 +218,11 @@ class DashboardSpecBuilder:
             title=str(payload.get("title") or payload.get("question") or "数据大屏"),
             layout=Layout(items=items),
             panels=panels,
-            data_sources=[source],
+            data_sources=sources,
             meta=SpecMeta(
                 generated_by_trace=trace_id,
                 generated_at=dt.datetime.now(dt.UTC).isoformat(),
+                generator="chatbi.visual.v2",
             ),
             session_id=payload.get("session_id"),
         )
@@ -163,15 +236,26 @@ class DashboardSpecBuilder:
         biz_line_id: int | None,
         scope_hash: str | None,
     ) -> Panel:
-        chart = raw.get("chart") or {}
-        encoding = raw.get("encoding")
+        kind = str(raw.get("kind") or "chart")
+        if kind not in _PANEL_KINDS:
+            logger.warning("未知 panel.kind=%s，降级为 chart", kind)
+            kind = "chart"
+        chart_obj = raw.get("chart")
+        chart_raw: dict[str, Any] = chart_obj if isinstance(chart_obj, dict) else {}
+        chart_type = str(chart_raw.get("type") or "line")
+        if chart_type not in _CHART_TYPES:
+            logger.warning("未知 chart.type=%s，降级为 line", chart_type)
+            chart_type = "line"
+        encoding_raw = raw.get("encoding")
         return Panel(
             panel_id=panel_id,
-            kind=raw.get("kind", "chart"),
+            kind=kind,  # type: ignore[arg-type]
             title=str(raw.get("title") or panel_id),
             subtitle=raw.get("subtitle"),
-            chart=ChartSpec(type=chart.get("type", "line")) if chart else None,
-            encoding=Encoding.model_validate(encoding) if isinstance(encoding, dict) else None,
+            chart=ChartSpec(type=chart_type, region=chart_raw.get("region")),  # type: ignore[arg-type]
+            encoding=Encoding.model_validate(encoding_raw)
+            if isinstance(encoding_raw, dict)
+            else None,
             dataset=dataset,
             query=PanelQuery(
                 metric_codes=list(raw.get("metric_codes") or metric_codes),
@@ -179,23 +263,39 @@ class DashboardSpecBuilder:
                 scope_hash=scope_hash,
             ),
             interaction=dict(raw.get("interaction") or {}),
-            style=dict(raw.get("style") or {}),
+            style=self._style(raw.get("style")),
+            text=raw.get("text"),
         )
 
+    @staticmethod
+    def _style(raw: Any) -> PanelStyle:
+        """解析 ``panel.style``（失败则退回空样式，不打断组装）。"""
+        if not isinstance(raw, dict):
+            return PanelStyle()
+        try:
+            return PanelStyle.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 - 样式错误不该让面板消失
+            logger.warning("panel.style 非法，已忽略：%s", exc)
+            return PanelStyle()
+
     def _data_source(
-        self, rows: list[dict[str, Any]], columns: list[dict[str, str]], payload: dict[str, Any]
+        self,
+        ref: str,
+        rows: list[dict[str, Any]],
+        columns: list[dict[str, str]],
+        payload: dict[str, Any],
     ) -> DataSource:
         if len(rows) > self._threshold:
             return DataSource(
-                ref="q1",
+                ref=ref,
                 mode="s3",
-                object_key=f"{payload.get('dashboard_key', 'dsh')}/q1.json",
+                object_key=f"{payload.get('dashboard_key', 'dsh')}/{ref}.json",
                 row_count=len(rows),
                 format="json",
             )
         matrix = [[row.get(col["name"]) for col in columns] for row in rows]
         return DataSource(
-            ref="q1",
+            ref=ref,
             mode="inline",
             columns=[DataColumn(**col) for col in columns],
             rows=matrix,

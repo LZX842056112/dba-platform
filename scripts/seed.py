@@ -18,6 +18,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 import sys
 
@@ -40,6 +41,8 @@ DEFAULT_DSN = os.environ.get(
     "mysql+asyncmy://dba_user:dba_user_pwd_2026@192.168.200.10:3306/dba",
 )
 _MICRO = 1_000_000  # 1 USD = 1_000_000 micro_usd
+
+logger = logging.getLogger("dba.seed")
 
 
 def _now() -> dt.datetime:
@@ -83,21 +86,95 @@ DEMO_USERS: tuple[dict, ...] = (
 )
 
 
-#: ``fact_sales`` 演示事实表 —— 列名必须与 ``di.py`` 的 DemoLLM 固定 SQL 对齐
-#: （``SELECT dt, SUM(gmv_ex_tax) ... FROM fact_sales``）。
+#: 演示省份 —— ★ ``name`` 必须与 ``frontend/src/assets/geo/china-100000-full.json``
+#: 里的 ``properties.name`` **完全一致**，否则地图面板会因名称对不上而空白。
+_FACT_PROVINCES: tuple[dict, ...] = (
+    {"code": "110000", "name": "北京市", "city": "北京市", "lat": 39.9042, "lon": 116.4074},
+    {"code": "320000", "name": "江苏省", "city": "南京市", "lat": 32.0603, "lon": 118.7969},
+    {"code": "330000", "name": "浙江省", "city": "杭州市", "lat": 30.2741, "lon": 120.1551},
+    {"code": "370000", "name": "山东省", "city": "济南市", "lat": 36.6512, "lon": 117.1201},
+    {"code": "410000", "name": "河南省", "city": "郑州市", "lat": 34.7466, "lon": 113.6254},
+    {"code": "420000", "name": "湖北省", "city": "武汉市", "lat": 30.5928, "lon": 114.3055},
+    {"code": "440000", "name": "广东省", "city": "广州市", "lat": 23.1291, "lon": 113.2644},
+    {"code": "510000", "name": "四川省", "city": "成都市", "lat": 30.5728, "lon": 104.0668},
+)
+
+#: 演示品类
+_FACT_CATEGORIES: tuple[dict, ...] = (
+    {"code": "digital", "name": "数码"},
+    {"code": "appliance", "name": "家电"},
+    {"code": "apparel", "name": "服饰"},
+    {"code": "food", "name": "食品"},
+    {"code": "beauty", "name": "美妆"},
+)
+
+_FACT_CHANNELS: tuple[str, ...] = ("online", "store")
+
+#: 品类体量权重（与 ``_FACT_CATEGORIES`` 同序）—— 让占比图有可读的差异，而非五等分。
+_FACT_CATEGORY_WEIGHT: tuple[float, ...] = (1.4, 1.2, 1.0, 0.8, 0.6)
+
+#: 省份体量权重（与 ``_FACT_PROVINCES`` 同序）—— 让排行/地图有真实的量级差异，
+#: 而不是各声一个数（adcode 全是 xxxx0000，取模无法区分省份）。
+_FACT_PROVINCE_WEIGHT: tuple[float, ...] = (0.9, 1.15, 1.0, 0.8, 0.7, 0.75, 1.35, 0.95)
+
+#: 省份 → 大区（保留 ``region_code`` 供行级权限链路使用）
+_FACT_REGION_OF: dict[str, str] = {
+    "110000": "north",
+    "320000": "east",
+    "330000": "east",
+    "370000": "north",
+    "410000": "north",
+    "420000": "west",
+    "440000": "east",
+    "510000": "west",
+}
+
+#: ``fact_sales`` 演示事实表 —— 列名必须与 DemoLLM 固定 SQL 对齐（``dt`` / ``gmv_ex_tax``）。
 _FACT_SALES_DDL = """
 CREATE TABLE IF NOT EXISTS fact_sales (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  dt          DATE            NOT NULL,
-  region_code VARCHAR(16)     NOT NULL,
-  channel     VARCHAR(16)     NOT NULL,
-  order_cnt   INT             NOT NULL DEFAULT 0,
-  gmv_ex_tax  DECIMAL(18,2)   NOT NULL DEFAULT 0,
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  dt             DATE            NOT NULL,
+  region_code    VARCHAR(16)     NOT NULL,
+  channel        VARCHAR(16)     NOT NULL,
+  province_code  VARCHAR(16)     NOT NULL,
+  province_name  VARCHAR(32)     NOT NULL,
+  city_name      VARCHAR(32)     NULL,
+  lat            DECIMAL(9,6)    NULL,
+  lon            DECIMAL(9,6)    NULL,
+  category_code  VARCHAR(16)     NOT NULL,
+  category_name  VARCHAR(32)     NOT NULL,
+  order_cnt      INT             NOT NULL DEFAULT 0,
+  gmv_ex_tax     DECIMAL(18,2)   NOT NULL DEFAULT 0,
+  profit_ex_tax  DECIMAL(18,2)   NOT NULL DEFAULT 0,
+  uv             INT             NOT NULL DEFAULT 0,
+  refund_cnt     INT             NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_dt_region_channel (dt, region_code, channel),
-  KEY idx_dt (dt)
+  UNIQUE KEY uk_grain (dt, province_code, channel, category_code),
+  KEY idx_dt (dt),
+  KEY idx_province (province_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
+
+
+async def _ensure_fact_sales_shape(conn: sa.ext.asyncio.AsyncConnection) -> None:
+    """确保 ``fact_sales`` 是**新版结构**（含省份/品类等地图形维度）。
+
+    若库里是旧版（只有 ``region_code``/``channel`` 的 4 列粒度），直接
+    ``DROP`` 重建 —— 本表是**纯演示合成数据**（非业务表），重建无数据损失风险，
+    且比「补列 + 迁移唯一键」简单可靠（旧数据在 4 列粒度下会撞唯一键）。
+    """
+    await conn.execute(sa.text(_FACT_SALES_DDL))
+    res = await conn.execute(
+        sa.text(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fact_sales'"
+        )
+    )
+    existing = {row[0] for row in res.fetchall()}
+    if "province_code" not in existing:
+        logger.warning("fact_sales 是旧版结构（缺省份维度），按演示表语义重建")
+        await conn.execute(sa.text("DROP TABLE fact_sales"))
+        await conn.execute(sa.text(_FACT_SALES_DDL))
 
 
 async def _upsert_users(conn: sa.ext.asyncio.AsyncConnection, now: dt.datetime) -> int:
@@ -137,32 +214,52 @@ async def _upsert_users(conn: sa.ext.asyncio.AsyncConnection, now: dt.datetime) 
 async def _seed_fact_sales(conn: sa.ext.asyncio.AsyncConnection) -> int:
     """建 ``fact_sales`` 演示表并灌 45 天数据（★ 日期相对 ``CURDATE()``，任何时刻跑都有数）。
 
+    粒度 = 45 天 × 8 省 × 2 渠道 × 5 品类 = **3600 行**；
     45 天 = DemoLLM 的 30 天窗口 + 缓冲；``ON DUPLICATE KEY UPDATE`` 保证幂等。
+    确定性伪随机（按日期与维度派生）→ 反复跑结果一致，便于断言。
     """
-    await conn.execute(sa.text(_FACT_SALES_DDL))
+    await _ensure_fact_sales_shape(conn)
     today = dt.date.today()
-    combos = (("east", "online"), ("east", "store"), ("west", "online"), ("north", "store"))
     rows: list[dict] = []
     for i in range(45):
         day = today - dt.timedelta(days=i)
-        for j, (region, channel) in enumerate(combos):
-            # 确定性伪随机（按日期与组合派生）→ 反复跑结果一致，便于断言
-            base = (day.toordinal() * 7 + j * 13) % 50
-            rows.append(
-                {
-                    "dt": day,
-                    "region_code": region,
-                    "channel": channel,
-                    "order_cnt": 100 + base,
-                    "gmv_ex_tax": 10000 + base * 137,
-                }
-            )
+        for pi, p in enumerate(_FACT_PROVINCES):
+            for ci, channel in enumerate(_FACT_CHANNELS):
+                for gi, cat in enumerate(_FACT_CATEGORIES):
+                    base = (day.toordinal() * 7 + pi * 31 + ci * 13 + gi * 29) % 97
+                    gmv = int(
+                        (3000 + base * 173) * _FACT_PROVINCE_WEIGHT[pi] * _FACT_CATEGORY_WEIGHT[gi]
+                    )
+                    rows.append(
+                        {
+                            "dt": day,
+                            "region_code": _FACT_REGION_OF[p["code"]],
+                            "channel": channel,
+                            "province_code": p["code"],
+                            "province_name": p["name"],
+                            "city_name": p["city"],
+                            "lat": p["lat"],
+                            "lon": p["lon"],
+                            "category_code": cat["code"],
+                            "category_name": cat["name"],
+                            "order_cnt": 20 + base % 40,
+                            "gmv_ex_tax": gmv,
+                            "profit_ex_tax": round(gmv * 0.18, 2),
+                            "uv": 100 + base % 200,
+                            "refund_cnt": base % 5,
+                        }
+                    )
     await conn.execute(
         sa.text(
-            "INSERT INTO fact_sales (dt, region_code, channel, order_cnt, gmv_ex_tax) "
-            "VALUES (:dt, :region_code, :channel, :order_cnt, :gmv_ex_tax) AS new "
+            "INSERT INTO fact_sales (dt, region_code, channel, province_code, "
+            "province_name, city_name, lat, lon, category_code, category_name, "
+            "order_cnt, gmv_ex_tax, profit_ex_tax, uv, refund_cnt) "
+            "VALUES (:dt, :region_code, :channel, :province_code, :province_name, "
+            ":city_name, :lat, :lon, :category_code, :category_name, :order_cnt, "
+            ":gmv_ex_tax, :profit_ex_tax, :uv, :refund_cnt) AS new "
             "ON DUPLICATE KEY UPDATE order_cnt=new.order_cnt, "
-            "gmv_ex_tax=new.gmv_ex_tax"
+            "gmv_ex_tax=new.gmv_ex_tax, profit_ex_tax=new.profit_ex_tax, "
+            "uv=new.uv, refund_cnt=new.refund_cnt"
         ),
         rows,
     )
