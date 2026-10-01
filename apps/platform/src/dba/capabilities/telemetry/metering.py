@@ -63,6 +63,10 @@ class OutboxMeteringService:
     async def record_span(self, rec: SpanRecord) -> None:
         await self._enqueue("span", dict(rec))
 
+    async def record_run(self, rec: dict[str, Any]) -> None:
+        """Run 生命周期（开始/收尾）入队 outbox → 异步写 ``run`` 表（观测模块 03 的源数据）。"""
+        await self._enqueue("run", rec)
+
     async def record_dlq(self, kind: str, rec: dict[str, Any]) -> None:
         await self._dlq.write(kind, "kernel_dlq", rec)
 

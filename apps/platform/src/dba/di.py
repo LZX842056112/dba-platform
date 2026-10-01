@@ -18,6 +18,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from dba_runtime.telemetry import (
@@ -646,8 +647,27 @@ def _build_outbox_handlers(
         async def _tool(payload: dict[str, Any]) -> None:
             await repos.tool_call.bulk_insert([_filter_columns(payload, mysql_models.ToolCall)])
 
+        async def _run(payload: dict[str, Any]) -> None:
+            """Run 生命周期：``op=finish`` 走收尾更新，否则插入 running 行。"""
+            trace_id = str(payload.get("trace_id") or "")
+            if not trace_id:
+                return
+            # outbox payload 是 JSON，datetime 已序列化为 ISO 字符串 → 解析回 datetime
+            for key in ("started_at", "ended_at"):
+                val = payload.get(key)
+                if isinstance(val, str) and val:
+                    payload[key] = datetime.fromisoformat(val)
+            if payload.get("op") == "finish":
+                row = _filter_columns(payload, mysql_models.Run)
+                row.pop("trace_id", None)
+                row.pop("started_at", None)
+                await repos.run.finish(trace_id, started_at=payload.get("started_at"), row=row)
+            else:
+                await repos.run.insert(_filter_columns(payload, mysql_models.Run))
+
         handlers["llm"] = _llm
         handlers["tool"] = _tool
+        handlers["run"] = _run
 
     mongo_repos = bundle.mongo_repos
     es_repo = bundle.es_repo
@@ -661,6 +681,10 @@ def _build_outbox_handlers(
                 "trace_id": trace_id,
                 "spans": [],
             }
+            # ★ Mongo 读回的 doc 含不可变的 ``_id``，直接 upsert 会撞
+            #   "update on the path '_id' would modify the immutable field '_id'"
+            #   → 曾导致 221 行 span 全进 DLQ。此处剔除再写。
+            doc.pop("_id", None)
             spans = list(doc.get("spans") or [])
             spans.append(payload)
             doc["spans"] = spans

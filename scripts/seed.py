@@ -564,6 +564,24 @@ async def seed(engine: sa.ext.asyncio.AsyncEngine, *, demo: bool) -> dict[str, i
                 "effective_to": None,
                 "created_at": now,
             },
+            # ★ DeepSeek（真实模型默认 provider）：官方价 per 1M tokens =
+            #   输入命中 $0.028 / 未命中 $0.28 / 输出 $0.42（deepseek-chat = V3.2 非思考模式）。
+            #   换算 micro_usd/1K：×1000。
+            #   缺了它 → 所有 deepseek 调用成本被记 0（FinOps 覆盖率失真）。
+            {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "billing_unit": "PER_1K_TOKEN",
+                "input_price_micro_usd": 280,
+                "output_price_micro_usd": 420,
+                "cache_read_price_micro_usd": 28,
+                "cache_write_price_micro_usd": 0,
+                "currency": "USD",
+                "fx_rate_to_usd": 1.0,
+                "effective_from": _SEED_EFFECTIVE_FROM,
+                "effective_to": None,
+                "created_at": now,
+            },
         ]
         counts["price_book"] = await _insert_missing(
             conn, PriceBook.__table__, prices, ("provider", "model", "effective_from")

@@ -371,6 +371,48 @@ async def _persist_dashboard_spec(mongo: Any, output: dict[str, Any]) -> None:
         logger.warning("大屏 spec 落库失败：%s", exc)
 
 
+async def _record_run(
+    metering: Any,
+    *,
+    op: str,
+    ctx: RunContext,
+    session_id: str,
+    started: datetime,
+    status: str = "running",
+    error_code: str | None = None,
+) -> None:
+    """入队 Run 生命周期（异步 outbox → 写 ``run`` 表，观测模块 03 的源数据）。
+
+    ★ 失败只告警，绝不影响主链路（埋点不是业务）。
+    """
+    try:
+        await metering.record_run(
+            {
+                "op": op,
+                "trace_id": ctx.trace_id,
+                # outbox payload 是 JSON 列，datetime 须序列化为 ISO 字符串
+                "started_at": started.isoformat(),
+                "module": ctx.module,
+                "user_id": ctx.user_id,
+                "biz_line_id": ctx.biz_line_id,
+                "session_id": session_id,
+                "scope_hash": ctx.scope_hash,
+                "status": status,
+                "ended_at": datetime.now(UTC).replace(tzinfo=None).isoformat()
+                if op == "finish"
+                else None,
+                "latency_ms": int(
+                    (datetime.now(UTC).replace(tzinfo=None) - started).total_seconds() * 1000
+                )
+                if op == "finish"
+                else None,
+                "error_code": (error_code or "")[:64] if error_code else None,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run 埋点入队失败：%s", exc)
+
+
 async def _run_bg(
     container: Container,
     pipeline: Any,
@@ -391,6 +433,14 @@ async def _run_bg(
     _CANCELS[ctx.trace_id] = token
     payload: dict[str, Any] = {"question": question, **options}
     mongo = container.get("mongo_repos")
+    # ★ run 埋点（观测模块 03 的源数据）：开始入队 running 行（异步 outbox）
+    #   started_at 列是 DATETIME(3)，须截断到毫秒，否则 finish 的 WHERE 匹配不上存储值
+    now = datetime.now(UTC).replace(tzinfo=None)
+    started = now.replace(microsecond=(now.microsecond // 1000) * 1000)
+    metering = container.get("metering")
+    run_status = "running"
+    run_error: str | None = None
+    await _record_run(metering, op="start", ctx=ctx, session_id=session_id, started=started)
     # 用户消息先落（即便 Run 失败也留下痕迹）
     await _append_message(mongo, session_id, ctx.trace_id, "user", question)
     try:
@@ -403,16 +453,28 @@ async def _run_bg(
         #   为门槛）。若先发事件，客户端会抢在落库完成前请求 → 拿到空 spec →
         #   图表恒显示「暂无数据（数据源未内联）」（实测竞态）。
         await _persist_dashboard_spec(mongo, result.output)
+        run_status = "success" if result.status == "success" else "failed"
         await emitter.emit(
             "run.finished",
             {"status": result.status, "steps_run": result.steps_run, "retries": result.retries},
         )
     except Exception as exc:  # noqa: BLE001 - 后台任务必须自行兜底（否则静默丢失）
         logger.exception("ChatBI 后台 Run 失败：%s", exc)
+        run_status = "failed"
+        run_error = str(exc)
         await emitter.emit("run.error", {"code": "50000", "message": str(exc), "retryable": False})
         await _append_message(mongo, session_id, ctx.trace_id, "assistant", f"[错误] {exc}")
     finally:
         _CANCELS.pop(ctx.trace_id, None)
+        await _record_run(
+            metering,
+            op="finish",
+            ctx=ctx,
+            session_id=session_id,
+            started=started,
+            status=run_status,
+            error_code=run_error,
+        )
         publisher = container.get("progress_publisher")
         if publisher is not None:
             publisher.forget(ctx.trace_id)
