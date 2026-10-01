@@ -30,6 +30,47 @@ uv run uvicorn dba.main:app --reload --port 8000
 
 > `deploy/docker-compose.yml` 已改为**参考 / 备用**（本地全栈回滚用），默认不启用。
 
+## 架构
+
+```mermaid
+graph TD
+    FE["前端 11 页：对话 / 观测 / FinOps"] -->|REST + SSE| API["L1 接入层（68 端点）"]
+    API --> CHATBI["ChatBI 七步流水线"]
+    API --> OBS["可观测性（观测 Agent 舰队自身）"]
+    API --> FNOPS["FinOps（成本 / 预算守卫）"]
+    CHATBI --> GUARD["SQL 五道护栏：只读/方言/行级权限AST注入/行数/dry-run"]
+    CHATBI --> RT["dba_runtime 内核（Run 模型 / 自愈回退状态机）"]
+    RT -.埋点.-> MySQL[(MySQL 权威账本)]
+    RT -.埋点.-> Mongo[(Mongo run_doc)]
+    OBS -.读.-> MySQL
+    FNOPS -.读.-> MySQL
+```
+
+**核心设计**：一个 `trace_id`（Run）贯穿一次提问——ChatBI 看它是执行记录、可观测性看它是观测对象、
+FinOps 看它是计量对象，**埋点只做一次**，三模块是同一份运行时数据的三个视角。
+
+## 截图
+
+| 对话 + 驾驶舱 | 排行 + 堆叠 + 趋势 |
+|---|---|
+| ![大屏上半](assets/dashboard-top.png) | ![大屏下半](assets/dashboard-bottom.png) |
+
+## 评测
+
+```bash
+export DBA_TEST_MYSQL_DSN=<你的 MySQL DSN>   # golden 需真实 MySQL（会建 eval 表）
+uv run dba eval --suite all --gate evals/thresholds.yaml
+```
+
+| 指标 | 值 | 门槛 |
+|---|---|---|
+| Execution Accuracy（overall） | **0.906** | ≥ 0.80 |
+| 行级权限对抗集（guard） | **121 / 121** | = 1.00 |
+| 权限边界题 EX（permission_boundary） | **1.000** | = 1.00 |
+
+> 口径：`golden` 用**录播候选 SQL**，衡量的是「护栏注入 + 执行 + 比较」链路的正确性，**不是模型准确率**
+> （见 `evals/README.md`）。`guard` 套件离线可跑、不写库。
+
 ## 质量
 
 ```bash
@@ -39,8 +80,8 @@ uv run pytest -q
 ```
 
 > 当前进度：**B0~B6 均已交付** —— 存储适配层 / L4 能力层 / 三模块业务（ChatBI · 可观测性 · FinOps）/
-> 聊天主链路与大屏前端 / 评测套件。后端 **68 个 API 端点**；前端 **2 个页面**（登录页 + 对话页，
-> 观测/FinOps 页面属 P2 未实现，但其后端端点是就绪的）。
+> 聊天主链路与大屏前端 / 评测套件。后端 **68 个 API 端点**；前端 **11 个页面**（登录 + 对话 +
+> 观测 5 页 + FinOps 4 页）。
 >
 > **默认走确定性演示替身**（`DemoLLMClient`）——追问同一问题结果稳定；要让大屏真正随问题变化，
 > 见下方「接真实模型」。
