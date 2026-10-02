@@ -73,7 +73,7 @@ DBA_E2E_BROWSER=1 uv run pytest tests/e2e/test_browser_e2e.py -v
 4. **`chrome-ws eval` 返回 JSON**，字符串带引号（如 `"admin"`），断言比较前需去引号（`cw_eval` 已处理）。
 5. Chrome 用独立 profile（`C:\temp\chrome-debug`），**不会污染日常浏览器**。
 
-## 未覆盖（浏览器里验不了，勿写进断言）
+## 本流程未覆盖
 
 | 项 | 原因 | 由谁覆盖 |
 |---|---|---|
@@ -82,4 +82,34 @@ DBA_E2E_BROWSER=1 uv run pytest tests/e2e/test_browser_e2e.py -v
 | 预算告警 / 降级 banner | 需真实用量触发，demo 不产生 | `tests/qa/` 相关用例 |
 | 成本展示 | `run.finished` 不带 `usage`（`_run_bg` 未下发） | 后续补齐时再加断言 |
 | SSE 断线重连（`Last-Event-ID`） | demo 下 Run 秒级完成，事件在首连回放即终态 | 需人为断网，列为 P2 |
-| 观测 / FinOps 页面 | **前端未开发**，无 UI 入口 | — |
+| 观测 / FinOps 页面 | 页面已实现，但本脚本只验证 ChatBI 主流程 | 可扩展独立页面浏览器断言 |
+
+---
+
+## 2026-10-03 轮次：全流程联调验证入口（`run_all.sh`）
+
+`run_legacy`（`run_browser_e2e.sh`）只覆盖 ChatBI 主链路；本轮新增一套**可重跑的全流程联调**：
+
+```bash
+bash tests/e2e/browser/run_all.sh                      # 全量（含真实模型，约 10 分钟）
+DBA_E2E_SKIP_REAL=1 bash tests/e2e/browser/run_all.sh  # 零 token（跳过真实模型）
+```
+
+阶段：P0 预检 → P1 起服务 → P2 接口矩阵 → P3 护栏分支（脚本化 LLM）→ P4 行级权限（真实库注入+清理）
+→ P5 故障注入（Redis / MySQL 隔离实例）→ P6 真实浏览器 UI 走查 → P7 worker 点触发 + guard 评测
+→ P8 真实模型验收 → P9 降级态前端。
+
+文件分工：
+
+| 文件 | 职责 |
+|---|---|
+| `run_all.sh` | 编排全部阶段、管理服务进程与故障实例、汇总 `summary.json` |
+| `api_matrix.py` | HTTP/SSE 接口与分支矩阵（每阶段产出 `api_results.json` + `evidence/`） |
+| `e2e_backend.py` | 后端启动器：FastAPI 兼容垫片 + 脚本化 LLM + 运行期脚本切换端点 |
+| `http_probe.py` / `sse_capture.py` | 单次 HTTP 探针 / SSE 抓帧落盘（bash 断言用） |
+| `scenarios/ui_walkthrough.sh` | chrome-ws 真实浏览器 UI 走查（含上一轮 P0 回归） |
+| `scenarios/degraded_ui.sh` | 后端降级态下的前端表现（不白屏 / 不死锁） |
+
+> ★ 环境前提（本机实测）：`uv` 不在 PATH 且沙箱禁止执行 uv 托管解释器，故统一用
+> `.venv/Scripts/python.exe` 启动；Git Bash 需 `MSYS_NO_PATHCONV=1`（lib.sh 已设置），
+> 且传给 Windows Python 的路径要用 `cygpath -m` 形式（lib.sh / run_all.sh 已处理）。

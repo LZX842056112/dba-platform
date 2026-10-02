@@ -122,6 +122,13 @@ class InMemoryProgressWriter:
     async def replay(self, trace_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
         return [e for e in self._store.get(trace_id, []) if int(e.get("seq", 0)) > after_seq]
 
+    async def replay_page(
+        self, trace_id: str
+    ) -> tuple[list[dict[str, Any]], int | None, int | None]:
+        events = self._store.get(trace_id, [])
+        seqs = [int(event.get("seq", 0)) for event in events]
+        return events.copy(), min(seqs, default=None), max(seqs, default=None)
+
 
 class InMemoryAuditSink:
     """审计落点占位（内存）。"""
@@ -1073,3 +1080,10 @@ async def warmup(container: Container) -> None:
             await bundle.redis.ensure_scripts()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Redis Lua 脚本注册失败：%s", exc)
+
+    if bundle.es_repo is not None:
+        try:
+            # 同步索引模板与已有 concrete index 的 mapping，否则 strict 索引会拒绝新字段。
+            await bundle.es_repo.ensure_indices()
+        except Exception as exc:  # noqa: BLE001 - ES 不可用时保留 fail-open 降级
+            logger.warning("Elasticsearch 索引/映射预热失败：%s", exc)

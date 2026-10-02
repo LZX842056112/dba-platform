@@ -6,7 +6,7 @@
 ----------
 1. **每条消息都写 ``id: {seq}``**：浏览器才会在重连时自动带 ``Last-Event-ID``；
 2. **从 ``run:progress`` 回放最近 200 条**（Redis LIST，TTL 1h）——跨副本可回放；
-3. **``Last-Event-ID`` 续传不丢不重**：回放 ``after_seq = Last-Event-ID``，只发更大 seq。
+3. **旧游标显式报缺口**：历史超出保留范围时发送 ``replay.gap``，并继续回放可用事件。
 
 ★ 为什么用 ticket 而不是 JWT：``EventSource`` 不支持自定义请求头（见 ``api.stream_tickets``）。
 """
@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -40,6 +41,16 @@ _HEARTBEAT_S = 15.0
 
 #: 单次订阅的最长时长（秒），避免连接悬挂
 _MAX_STREAM_S = 300.0
+
+
+@dataclass(frozen=True)
+class _ReplayPage:
+    """兼容旧进度发布器的回放页；旧协议无法提供缺口元数据。"""
+
+    events: list[Any]
+    oldest_seq: int | None
+    latest_seq: int | None
+    has_gap: bool = False
 
 
 def build_sse_frames(events: list[Any]) -> list[str]:
@@ -79,6 +90,7 @@ async def stream_run(
     container: Annotated[Container, Depends(get_container)],
     ticket: Annotated[str | None, Query()] = None,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    last_event_id_query: Annotated[str | None, Query(alias="last_event_id")] = None,
 ) -> Any:
     """``GET /stream/runs/{trace_id}?ticket=``：订阅某次 Run 的实时事件。"""
     tickets = container.get("stream_tickets")
@@ -106,7 +118,8 @@ async def stream_run(
             },
         )
 
-    after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+    cursor = last_event_id if last_event_id and last_event_id.isdigit() else last_event_id_query
+    after = int(cursor) if cursor and cursor.isdigit() else 0
     return StreamingResponse(
         _stream(publisher, trace_id, after),
         media_type="text/event-stream",
@@ -119,21 +132,30 @@ async def stream_run(
 
 
 async def _stream(publisher: Any, trace_id: str, after: int) -> AsyncIterator[str]:
-    """SSE 生成器：先回放（after_seq=Last-Event-ID），再轮询新事件，附 15s 心跳。"""
+    """SSE 生成器：先报告保留窗口缺口，再回放新游标之后的事件并轮询。"""
     sent = after
     started = asyncio.get_running_loop().time()
     last_beat = started
 
-    # 1) 回放历史（去重靠 after_seq；seq 单调，天然不重）
+    # 1) 读取游标窗口；老于首条保留事件时显式提示，绝不把截断伪装成完整续传。
     try:
-        replay = await publisher.replay(trace_id, after_seq=after)
+        page = await _read_replay_page(publisher, trace_id, after)
     except Exception as exc:  # noqa: BLE001 - 通道故障只影响本次订阅
         logger.warning("进度回放失败：%s", exc)
-        replay = []
+        page = None
+    if page is not None and page.has_gap:
+        yield _replay_gap_frame(after, page)
+        if not page.events and page.latest_seq is not None:
+            # 列表 TTL 已到但水位仍在；推进服务端游标以等待未来的新事件。
+            sent = page.latest_seq
+    replay = page.events if page is not None else []
     for frame in build_sse_frames(replay):
         yield frame
     if replay:
         sent = max(sent, max(int(e.seq) for e in replay))
+        # 重连时终态可能已经在历史窗口中；回放完终态必须关闭连接，避免空轮询。
+        if any(event.event in _TERMINAL_EVENTS for event in replay):
+            return
 
     # 2) 轮询新事件直到终态 / 超时
     while True:
@@ -142,9 +164,14 @@ async def _stream(publisher: Any, trace_id: str, after: int) -> AsyncIterator[st
             yield _heartbeat("stream_timeout")
             return
         try:
-            events = await publisher.replay(trace_id, after_seq=sent)
+            page = await _read_replay_page(publisher, trace_id, sent)
         except Exception:  # noqa: BLE001
-            events = []
+            page = None
+        events = page.events if page is not None else []
+        if page is not None and page.has_gap:
+            yield _replay_gap_frame(sent, page)
+            if not events and page.latest_seq is not None:
+                sent = page.latest_seq
         if events:
             for frame in build_sse_frames(events):
                 yield frame
@@ -156,6 +183,35 @@ async def _stream(publisher: Any, trace_id: str, after: int) -> AsyncIterator[st
             yield _heartbeat("heartbeat")
             last_beat = now
         await asyncio.sleep(0.5)
+
+
+def _replay_gap_frame(after: int, page: Any) -> str:
+    """构造缺口提示；无可回放事件时用水位作为 id，避免客户端反复从旧游标重连。"""
+    payload = json.dumps(
+        {
+            "after_seq": after,
+            "oldest_available_seq": page.oldest_seq,
+            "latest_seq": page.latest_seq,
+            "advance_cursor": not bool(page.events),
+        },
+        ensure_ascii=False,
+    )
+    cursor = f"id: {page.latest_seq}\n" if not page.events and page.latest_seq is not None else ""
+    return f"{cursor}event: replay.gap\ndata: {payload}\n\n"
+
+
+async def _read_replay_page(publisher: Any, trace_id: str, after: int) -> Any:
+    """读取有缺口信息的新协议页，或兼容仅支持 replay() 的旧发布器。"""
+    page_reader = getattr(publisher, "replay_page", None)
+    if page_reader is not None:
+        return await page_reader(trace_id, after_seq=after)
+    events = await publisher.replay(trace_id, after_seq=after)
+    seqs = [int(event.seq) for event in events]
+    return _ReplayPage(
+        events=events,
+        oldest_seq=min(seqs, default=None),
+        latest_seq=max(seqs, default=None),
+    )
 
 
 def _heartbeat(kind: str) -> str:

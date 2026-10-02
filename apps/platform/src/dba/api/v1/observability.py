@@ -12,11 +12,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 
 from dba.api.deps import Principal, get_container, get_current_principal
-from dba.api.v1._common import parse_window, service_or_default, storage_or_default
+from dba.api.v1._common import parse_window, read_run_doc, service_or_default, storage_or_default
 from dba.di import Container
 
 __all__ = ["router"]
@@ -25,9 +26,11 @@ logger = logging.getLogger("dba.api.observability")
 
 router = APIRouter()
 
+_AGENT_TOKEN_HEADER = APIKeyHeader(name="X-Agent-Token", scheme_name="AgentToken", auto_error=False)
+
 
 def _require_agent_token(
-    x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    x_agent_token: Annotated[str | None, Security(_AGENT_TOKEN_HEADER)] = None,
 ) -> str:
     """Agent 上报类接口鉴权（``X-Agent-Token``）。"""
     if not x_agent_token:
@@ -116,10 +119,26 @@ async def register_agent(
     }
     if not row["agent_uid"]:
         return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 agent_uid"})
+    agent_name = str(payload.get("name") or "").strip()
+    allowed_runtime_types = {"internal_pipeline", "external_sdk", "otel_agent"}
+    if row["runtime_type"] not in allowed_runtime_types:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "code": "40001",
+                "message": "runtime_type 无效",
+                "detail": {"allowed": sorted(allowed_runtime_types)},
+                "trace_id": None,
+            },
+        )
+    if not agent_name:
+        return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 name"})
+    row["name"] = agent_name
     try:
         await repos.app_agent.upsert(row)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Agent 注册失败：%s", exc)
+        raise
     return {"ok": True}
 
 
@@ -139,6 +158,7 @@ async def agent_heartbeat(
         await repos.app_agent.heartbeat(agent_uid, datetime.now(UTC).replace(tzinfo=None))
     except Exception as exc:  # noqa: BLE001
         logger.warning("心跳写入失败：%s", exc)
+        raise
     return {"ok": True}
 
 
@@ -184,15 +204,7 @@ async def get_run(
     _principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict[str, Any]:
     """``GET /obs/runs/{trace_id}``：run_doc（span 树）。"""
-    metering = container.get("metering")
-    if metering is None:
-        return {}
-    try:
-        doc = await metering.get_run_doc(trace_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_doc 读取失败：%s", exc)
-        doc = None
-    return dict(doc or {})
+    return await read_run_doc(container, trace_id)
 
 
 @router.get("/self-cost")
@@ -294,7 +306,7 @@ async def obs_skills(
     if repos is None:
         return []
     try:
-        rows = await repos.skill_registry.match_intent("", biz_line_id)
+        rows = await repos.skill_registry.list_for_observability(biz_line_id, is_dead)
         return [dict(r) for r in rows]
     except Exception as exc:  # noqa: BLE001
         logger.warning("技能列表查询失败：%s", exc)
@@ -333,7 +345,7 @@ async def anomaly_detail(
 
 
 async def _ack_alert(alert_id: int, container: Container, principal: Principal) -> dict[str, Any]:
-    """确认一条异常（``ack`` 与 ``resolve`` 共用同一实现）。"""
+    """将告警标记为已确认；数据库状态是唯一结果依据。"""
     repos = storage_or_default(container)
     if repos is None:
         return {"ok": False, "reason": "storage_unavailable"}
@@ -341,6 +353,20 @@ async def _ack_alert(alert_id: int, container: Container, principal: Principal) 
         await repos.alert_event.ack(alert_id, principal.user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("异常确认失败：%s", exc)
+        raise
+    return {"ok": True}
+
+
+async def _resolve_alert(alert_id: int, container: Container) -> dict[str, Any]:
+    """将 open/acked 告警置为 resolved，重复操作保持幂等。"""
+    repos = storage_or_default(container)
+    if repos is None:
+        return {"ok": False, "reason": "storage_unavailable"}
+    try:
+        await repos.alert_event.resolve(alert_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("异常解决失败：%s", exc)
+        raise
     return {"ok": True}
 
 
@@ -363,9 +389,9 @@ async def resolve_anomaly(
     container: Annotated[Container, Depends(get_container)],
     principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict[str, Any]:
-    """``POST /obs/anomalies/{id}/resolve``（ack 的语义别名，保留 note）。"""
-    _ = payload
-    return await _ack_alert(alert_id, container, principal)
+    """``POST /obs/anomalies/{id}/resolve``：将告警置为已解决。"""
+    _ = (payload, principal)
+    return await _resolve_alert(alert_id, container)
 
 
 @router.post("/otel/v1/traces", response_model=None)

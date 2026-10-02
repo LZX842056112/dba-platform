@@ -17,7 +17,7 @@ import type { EventEnvelope, UsageData } from '../../../types/events';
 export type RunStatus = 'idle' | 'running' | 'done' | 'error';
 
 export interface StepState {
-  status: 'running' | 'done' | 'retrying';
+  status: 'running' | 'done' | 'retrying' | 'error';
   attempt: number;
   durationMs?: number;
 }
@@ -33,6 +33,13 @@ export interface RunError {
   message: string;
   retryable: boolean;
   hint?: string;
+}
+
+export interface ReplayGap {
+  afterSeq: number;
+  oldestAvailableSeq: number | null;
+  latestSeq: number | null;
+  recovered: boolean;
 }
 
 export interface RunState {
@@ -51,6 +58,7 @@ export interface RunState {
   narration: string;
   usage: UsageData | null;
   error: RunError | null;
+  replayGap: ReplayGap | null;
   /** 顶部提示条（预算告警 / 降级等）。 */
   banner: { kind: 'warn' | 'info' | 'error'; text: string } | null;
 }
@@ -70,6 +78,7 @@ const initialRunState: RunState = {
   narration: '',
   usage: null,
   error: null,
+  replayGap: null,
   banner: null,
 };
 
@@ -84,17 +93,55 @@ function mergeDataSources(
   return next;
 }
 
+/**
+ * 按 Run 终态收束步骤状态。
+ * 输入步骤映射与目标状态，输出新的步骤映射；只改写 running/retrying，保留已结束步骤。
+ */
+function settleSteps(
+  steps: Record<string, StepState>,
+  status: 'done' | 'error',
+): Record<string, StepState> {
+  const next = { ...steps };
+  for (const [name, step] of Object.entries(next)) {
+    if (step.status === 'running' || step.status === 'retrying') {
+      next[name] = { ...step, status };
+    }
+  }
+  return next;
+}
+
 export interface RunStore extends RunState {
   apply: (event: EventEnvelope) => void;
   /** 回拉整份大屏 JSON（§9.5）后合并 data_sources / layout / panels。 */
   hydrateDashboard: (spec: Partial<DashboardSpec> | null | undefined) => void;
   reset: () => void;
+  markReplayGap: (gap: Omit<ReplayGap, 'recovered'>) => void;
+  recoverReplayGap: (spanCount: number, assistantMessage?: string) => void;
 }
 
 export const useRunStore = create<RunStore>((set, get) => ({
   ...initialRunState,
 
   reset: () => set(() => ({ ...initialRunState })),
+
+  markReplayGap: (gap) =>
+    set(() => ({
+      replayGap: { ...gap, recovered: false },
+      banner: {
+        kind: 'warn',
+        text: '事件历史超出保留范围，正在回查 Run 详情和会话消息。',
+      },
+    })),
+
+  recoverReplayGap: (spanCount, assistantMessage) =>
+    set((s) => ({
+      replayGap: s.replayGap ? { ...s.replayGap, recovered: true } : null,
+      narration: assistantMessage || s.narration,
+      banner: {
+        kind: 'warn',
+        text: `事件历史不完整；已回查 Run 详情（${spanCount} 个 span）和会话消息。`,
+      },
+    })),
 
   hydrateDashboard: (spec) => {
     if (!spec || typeof spec !== 'object') return;
@@ -259,8 +306,23 @@ export const useRunStore = create<RunStore>((set, get) => ({
         return;
       }
       case 'run.finished': {
-        const data = event.data as { usage?: UsageData };
-        set(() => ({ ...bump, status: 'done', usage: data.usage ?? null }));
+        const data = event.data as { status?: string; usage?: UsageData };
+        const runStatus = String(data.status ?? '').toLowerCase();
+        const succeeded = runStatus === 'success' || runStatus === 'done';
+        set((s) => ({
+          ...bump,
+          status: succeeded ? 'done' : 'error',
+          steps: settleSteps(s.steps, succeeded ? 'done' : 'error'),
+          retrying: null,
+          usage: data.usage ?? null,
+          error: succeeded
+            ? null
+            : {
+                code: 'RUN_FAILED',
+                message: `运行未成功${runStatus ? `（状态：${runStatus}）` : ''}`,
+                retryable: false,
+              },
+        }));
         return;
       }
       case 'run.error': {
@@ -270,9 +332,11 @@ export const useRunStore = create<RunStore>((set, get) => ({
           retryable: boolean;
           hint?: string;
         };
-        set(() => ({
+        set((s) => ({
           ...bump,
           status: 'error',
+          steps: settleSteps(s.steps, 'error'),
+          retrying: null,
           error: {
             code: data.code,
             message: data.message,
@@ -284,9 +348,11 @@ export const useRunStore = create<RunStore>((set, get) => ({
       }
       case 'run.aborted': {
         const data = event.data as { reason: string };
-        set(() => ({
+        set((s) => ({
           ...bump,
           status: 'error',
+          steps: settleSteps(s.steps, 'error'),
+          retrying: null,
           error: { code: 'RUN_ABORTED', message: data.reason ?? '运行被中断', retryable: false },
         }));
         return;

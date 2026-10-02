@@ -13,12 +13,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from dba.di import Container
 
-__all__ = ["parse_ts", "parse_window", "service_or_default", "storage_or_default"]
+__all__ = ["parse_ts", "parse_window", "read_run_doc", "service_or_default", "storage_or_default"]
+
+logger = logging.getLogger("dba.api.v1.common")
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -69,3 +72,21 @@ def storage_or_default(container: Container, default: Any = None) -> Any:
     薄封装：``repos`` 是接口层最常用的可选依赖（列表类接口在存储不可用时统一返回 ``[]``）。
     """
     return service_or_default(container, "repos", default)
+
+
+async def read_run_doc(container: Container, trace_id: str) -> dict[str, Any]:
+    """从 Mongo ``run_doc`` 仓储读取 span 树；缺失或读取失败时返回空对象。
+
+    两个公开 Run 详情端点共用此入口，避免误把运行记录服务当作文档存储。
+    输入为 DI 容器和 trace id，输出保持 API 既有的字典响应形状。
+    """
+    mongo_repos = service_or_default(container, "mongo_repos", None)
+    run_doc_repo = getattr(mongo_repos, "run_doc", None)
+    if run_doc_repo is None:
+        return {}
+    try:
+        doc = await run_doc_repo.get(trace_id)
+    except Exception as exc:  # noqa: BLE001 - 详情读取失败时兼容原有空对象回退
+        logger.warning("run_doc 读取失败（trace_id=%s）：%s", trace_id, exc)
+        return {}
+    return dict(doc or {})

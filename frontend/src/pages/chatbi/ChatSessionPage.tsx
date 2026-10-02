@@ -27,7 +27,7 @@ export function ChatSessionPage() {
   const panelOrder = useRunStore((state) => state.panelOrder);
   const panels = useRunStore((state) => state.panels);
 
-  const { start, starting } = useChatRun();
+  const { start, busy } = useChatRun();
   useDashboardHydration();
 
   const ordered = panelOrder
@@ -38,7 +38,7 @@ export function ChatSessionPage() {
     <div className="chat-session">
       <section className="panel">
         <div className="panel-title">对话</div>
-        <QueryBar onSubmit={start} disabled={starting} />
+        <QueryBar onSubmit={start} disabled={busy} />
         <RunBanner banner={banner} error={error} status={status} />
         <StepProgress steps={steps} />
         <RetryHint retrying={retrying} />

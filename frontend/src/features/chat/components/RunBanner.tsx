@@ -26,6 +26,7 @@ export function RunBanner({ banner, error, status }: Props) {
           </div>
         </div>
       ) : null}
+      {status === 'error' ? <span className="badge badge--error">运行失败</span> : null}
       {status === 'done' ? <span className="badge badge--done">已完成</span> : null}
       {status === 'running' ? <span className="badge badge--running">进行中</span> : null}
     </>

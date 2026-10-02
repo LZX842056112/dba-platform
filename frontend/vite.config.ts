@@ -1,9 +1,13 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    restoreMocks: true,
+  },
   server: {
     port: 5173,
     // 开发期把 /api 代理到后端（生产由网关统一路由）

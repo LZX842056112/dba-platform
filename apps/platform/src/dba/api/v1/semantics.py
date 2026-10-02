@@ -25,6 +25,19 @@ router = APIRouter()
 
 ADMIN_ROLE_ID = 1
 
+_METRIC_FIELDS = {
+    "name": "metric_name",
+    "metric_name": "metric_name",
+    "description": "caliber_desc",
+    "caliber_desc": "caliber_desc",
+    "expression": "sql_expr",
+    "sql_expr": "sql_expr",
+    "unit": "unit",
+    "include_tax": "include_tax",
+    "region_scope": "region_scope",
+    "default_dims": "default_dims",
+}
+
 
 @router.get("/metrics")
 async def list_metrics(
@@ -69,28 +82,65 @@ async def get_metric(
 @router.post("/metrics", response_model=None)
 async def create_metric(
     payload: dict[str, Any],
-    _admin: Annotated[Principal, Depends(require_roles(ADMIN_ROLE_ID))],
+    admin: Annotated[Principal, Depends(require_roles(ADMIN_ROLE_ID))],
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any] | JSONResponse:
     """``POST /semantics/metrics``（admin）。"""
     repos = container.get("repos")
     if repos is None:
         return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
-    code = str(payload.get("code") or "")
-    if not code:
-        return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 code"})
+    code = str(payload.get("code") or payload.get("metric_code") or "").strip()
+    fields = {
+        target: payload[source]
+        for source, target in _METRIC_FIELDS.items()
+        if source in payload
+    }
+    required = {"metric_name", "caliber_desc", "sql_expr"}
+    if not code or not required.issubset(fields):
+        missing = sorted(required - fields.keys())
+        return JSONResponse(
+            status_code=400,
+            content={
+                "code": "40001",
+                "message": "缺少指标必填字段",
+                "detail": {"missing": (["code"] if not code else []) + missing},
+                "trace_id": None,
+            },
+        )
+    row = {
+        "metric_code": code,
+        "biz_line_id": payload.get("biz_line_id"),
+        "created_by": admin.user_id,
+        "status": 1,
+        **fields,
+    }
+    row.setdefault("unit", "CNY")
+    await repos.sem_metric.insert(row)
     return {"metric_id": code, "created": True}
 
 
-@router.patch("/metrics/{code}")
+@router.patch("/metrics/{code}", response_model=None)
 async def patch_metric(
     code: str,
     payload: dict[str, Any],
-    _admin: Annotated[Principal, Depends(require_roles(ADMIN_ROLE_ID))],
-) -> dict[str, Any]:
+    admin: Annotated[Principal, Depends(require_roles(ADMIN_ROLE_ID))],
+    container: Annotated[Container, Depends(get_container)],
+) -> dict[str, Any] | JSONResponse:
     """``PATCH /semantics/metrics/{code}``（admin，版本 +1）。"""
-    _ = (code, payload)
-    return {"version": 1}
+    repos = container.get("repos")
+    if repos is None:
+        return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
+    fields = {
+        target: payload[source]
+        for source, target in _METRIC_FIELDS.items()
+        if source in payload
+    }
+    if not fields:
+        return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少更新字段"})
+    row = await repos.sem_metric.patch(code, admin.biz_line_id, fields)
+    if row is None:
+        return JSONResponse(status_code=404, content={"code": "40400", "message": "指标不存在"})
+    return {"version": int(row["version"])}
 
 
 @router.get("/search")

@@ -1,9 +1,8 @@
-# 前端最小集 · 数据大屏 × 多 Agent 平台
+# 前端 · 数据大屏 × 多 Agent 平台
 
 对齐《数据大屏-多Agent平台-三模块开发设计方案-v2》**§9（前端分层与交互协议）**。
-本目录只交付**能跑通主链路的最小集**：本仓实际只有 **2 个页面**——`pages/login/LoginPage.tsx`
-与 `pages/chatbi/ChatSessionPage.tsx`（路由见 `app/routes.tsx`）。
-设计文档 §9.1 列的观测页 / FinOps 页 / 语义管理页 / 技能页等均**属 P2，未实现**。
+前端包含 **11 个页面路由**：登录、ChatBI 对话、5 个 Observability 页面与 4 个 FinOps 页面
+（路由见 `src/app/routes.tsx`）。语义管理页与技能管理页当前未实现。
 
 ## 技术栈（§9.1）
 
@@ -13,7 +12,7 @@
 | ECharts 5（`echarts/core` 按需注册） | 图表渲染（§9.6）；含地图 `MapChart` + `GeoComponent`，深色主题 `dba-dark` |
 | TanStack Query | 服务端状态（大屏 JSON 回拉） |
 | zustand | 客户端状态（`runStore` 幂等 reducer，§9.2） |
-| react-router-dom | 路由（登录 + 对话页） |
+| react-router-dom | 登录、ChatBI、Observability 与 FinOps 路由 |
 | 大屏布局 | **自研 CSS Grid**（`features/dashboard/components/DashboardGrid.tsx`）；**未使用 `react-grid-layout`**（该包未安装） |
 
 > 包管理器：设计文档写 `pnpm`；本机无 pnpm 时用 **npm**（脚本等价，已如实报告）。
@@ -23,13 +22,13 @@
 ```
 src/
 ├── api/            client.ts（统一 fetch）/ sse.ts（★ Last-Event-ID 续传）
-├── app/            App.tsx / routes.tsx / providers/
+├── app/            App.tsx / routes.tsx / RouteErrorBoundary / providers/
 ├── components/charts/  EchartsBase.tsx（★ §9.6 基座）
 ├── features/
 │   ├── chat/       api/ components/ hooks/ store/runStore.ts（★ 幂等 reducer）
 │   └── dashboard/  components/（DashboardGrid / PanelRenderer …）optionBuilder.ts selectors.ts
 ├── lib/            echarts.ts / format.ts / schema.ts
-├── pages/chatbi/   ChatSessionPage.tsx
+├── pages/          login/ · chatbi/ · observability/ · finops/
 ├── styles/         tokens.css / global.css
 └── types/          dashboard.ts / events.ts / api.d.ts
 ```
@@ -40,6 +39,7 @@ src/
 npm install          # 安装依赖
 npm run dev          # 本地开发（/api 代理到 127.0.0.1:8000，见 vite.config.ts）
 npm run build        # tsc --noEmit && vite build
+npm test             # Vitest + jsdom 回归测试
 npm run lint         # tsc --noEmit
 npm run gen:api      # 由后端 OpenAPI 生成 src/types/api.d.ts（U27）
 ```
@@ -67,7 +67,7 @@ npm run gen:api      # 由后端 OpenAPI 生成 src/types/api.d.ts（U27）
    - ⚠️ 后端以**命名事件**（`event: run.started`）推送，故客户端对每个事件名 `addEventListener`，**不能用 `onmessage`**。
    - 信封的 `seq` 取自 SSE 的 `id:` 字段；浏览器据此自动带 `Last-Event-ID` 续传；`runStore` 用 `seq` 幂等去重。
 3. `runStore.apply(event)` 分派：`run.started` 重置、`agent.step.*` 进度、`sql.*`/自愈提示、`dashboard.spec.delta` 按 `panel_id` upsert、`dashboard.spec.ready` 锁定布局。
-4. 收到 `run.finished`（`status === 'done'`）后按 `dashboard_id` 回拉整份大屏 JSON 补全 `data_sources`
+4. 收到成功终态 `run.finished`（后端 `status: success`）后按 `dashboard_id` 回拉整份大屏 JSON 补全 `data_sources`
    （面板只带 `dataset.ref`）。★ 门槛用终态而非 `dashboard.spec.ready`：后者在流水线中途就到达，
    此时后端尚未落库 → 会拿到空 spec → 图表恒「暂无数据」。
 
@@ -99,7 +99,7 @@ npm run gen:api      # 由后端 OpenAPI 生成 src/types/api.d.ts（U27）
 
 ## 未实现 / 未验证（如实标注）
 
-- **未实现（P2）**：观测页、FinOps 页、语义管理页、技能页；`mode='s3'` 数据源的前端预签名直拉（§9.5 硬约定 2）。
+- **未实现**：语义管理页、技能管理页；`mode='s3'` 数据源的前端预签名直拉（§9.5 硬约定 2）。
 - **已验证（真实浏览器）**：登录（含错误口令）、提问 → 七步进度 → SQL 折叠 → ECharts 真实渲染，
   由 `tests/e2e/browser/run_browser_e2e.sh` 用真 Chrome 断言（见该目录 README）。
   **仍未验证**：SSE 断线重连（`Last-Event-ID`，需人为断网）、长连接下的内存行为。

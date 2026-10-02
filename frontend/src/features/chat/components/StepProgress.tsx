@@ -16,6 +16,8 @@ function badgeClass(status: StepState['status'] | 'idle'): string {
       return 'badge badge--warn';
     case 'done':
       return 'badge badge--done';
+    case 'error':
+      return 'badge badge--error';
     default:
       return 'badge';
   }
@@ -29,6 +31,8 @@ function badgeText(status: StepState['status'] | 'idle'): string {
       return '重试中';
     case 'done':
       return '完成';
+    case 'error':
+      return '失败';
     default:
       return '待处理';
   }

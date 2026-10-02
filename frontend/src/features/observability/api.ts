@@ -2,11 +2,16 @@
 
 import { api } from '../../api/client';
 
+export interface OverviewMetric {
+  value: number;
+  label?: string;
+}
+
 export interface OverviewKpi {
-  running_now: number;
-  cost_today_micro: number;
-  success_rate: number;
-  silent_failures: number;
+  running_now: OverviewMetric;
+  cost_today_micro: OverviewMetric;
+  success_rate: OverviewMetric;
+  silent_failures: OverviewMetric;
 }
 
 export interface OverviewResponse {

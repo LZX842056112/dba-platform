@@ -50,6 +50,17 @@ export interface GuardrailPolicy {
   kill_switch: boolean;
 }
 
+export interface FinopsRecommendation {
+  reco_id: string;
+  scope_type?: string;
+  scope_id?: string;
+  status?: string;
+  type?: string;
+  description?: string;
+  reason?: string;
+  estimated_saving_micro_usd?: number;
+}
+
 export function getCostSummary(): Promise<CostSummary> {
   return api.get<CostSummary>('/finops/cost/summary');
 }
@@ -82,8 +93,8 @@ export function getBudgetUsage(id: number): Promise<Record<string, unknown>> {
   return api.get<Record<string, unknown>>(`/finops/budgets/${id}/usage`);
 }
 
-export function getRecommendations(): Promise<Array<Record<string, unknown>>> {
-  return api.get<Array<Record<string, unknown>>>('/finops/recommendations');
+export function getRecommendations(): Promise<FinopsRecommendation[]> {
+  return api.get<FinopsRecommendation[]>('/finops/recommendations');
 }
 
 export function getLoopAlerts(): Promise<Array<Record<string, unknown>>> {

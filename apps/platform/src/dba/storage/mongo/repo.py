@@ -79,6 +79,16 @@ class ChatSessionRepo(_Repo):
             await self._run(self._coll("chat_session").find_one({"session_id": session_id}))
         )
 
+    async def soft_delete(self, session_id: str, user_id: int) -> bool:
+        """按会话归属标记删除，保留会话消息供审计。"""
+        result = await self._run(
+            self._coll("chat_session").update_one(
+                {"session_id": session_id, "user_id": user_id},
+                {"$set": {"deleted": True, "updated_at": _now()}},
+            )
+        )
+        return bool(result.matched_count)
+
     async def list_by_user(self, user_id: int, *, limit: int = 20) -> list[Row]:
         cursor = (
             self._coll("chat_session")
@@ -209,6 +219,10 @@ class FinopsRecommendationRepo(_Repo):
             query["status"] = flt["status"]
         if flt.get("biz_line_id") is not None:
             query["biz_line_id"] = flt["biz_line_id"]
+        if flt.get("scope_type"):
+            query["scope_type"] = flt["scope_type"]
+        if flt.get("scope_id") is not None:
+            query["scope_id"] = flt["scope_id"]
         limit = int(flt.get("limit", 50))
         cursor = self._coll("finops_recommendation").find(query).sort("created_at", -1).limit(limit)
         return _clean_many(await self._run(cursor.to_list(length=limit)))

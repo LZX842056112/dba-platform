@@ -16,6 +16,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
+from typing import Any
 
 from dba_runtime import (
     RunContext,
@@ -30,6 +31,7 @@ from dba_runtime import (
     set_current,
 )
 from fastapi import FastAPI, Request
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.responses import Response
 
@@ -40,6 +42,42 @@ from .config import HARD_DEPENDENCIES, Settings, get_settings
 from .di import Container, build_container, warmup
 
 logger = logging.getLogger("dba.main")
+
+
+def _install_openapi_contract(app: FastAPI) -> None:
+    """把运行时 400 校验错误同步到 OpenAPI，供 Swagger 与生成客户端使用。"""
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        schema.setdefault("components", {}).setdefault("schemas", {})["DbaErrorBody"] = {
+            "type": "object",
+            "required": ["code", "message", "detail", "trace_id"],
+            "properties": {
+                "code": {"type": "string"},
+                "message": {"type": "string"},
+                "detail": {"type": "object", "additionalProperties": True},
+                "trace_id": {"type": ["string", "null"]},
+            },
+        }
+        validation_response = {
+            "description": "参数校验失败",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/DbaErrorBody"}}
+            },
+        }
+        for path_item in schema.get("paths", {}).values():
+            for operation in path_item.values():
+                if not isinstance(operation, dict):
+                    continue
+                responses = operation.get("responses", {})
+                if responses.pop("422", None) is not None:
+                    responses.setdefault("400", validation_response)
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 def _make_lifespan(
@@ -115,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_ops_routes(app, settings)
     register_v1(app)
+    _install_openapi_contract(app)
     return app
 
 

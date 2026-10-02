@@ -14,10 +14,10 @@ export function OverviewPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-        <StatCard label="正在运行" value={kpi?.running_now ?? 0} />
-        <StatCard label="今日成本" value={formatNumber(kpi?.cost_today_micro ?? 0)} unit=" µ$" />
-        <StatCard label="成功率" value={kpi?.success_rate ?? 0} unit="%" />
-        <StatCard label="静默失败" value={kpi?.silent_failures ?? 0} />
+        <StatCard label="正在运行" value={kpi?.running_now?.value ?? 0} />
+        <StatCard label="今日成本" value={formatNumber(kpi?.cost_today_micro?.value ?? 0)} unit=" µ$" />
+        <StatCard label="成功率" value={kpi?.success_rate?.value ?? 0} unit="%" />
+        <StatCard label="静默失败" value={kpi?.silent_failures?.value ?? 0} />
       </div>
       <PagePanel title="Top Agent（按调用量）">
         <SimpleList items={topAgents} emptyText="暂无 Agent 数据（多问几次积累 Run）" />

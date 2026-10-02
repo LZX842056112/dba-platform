@@ -23,6 +23,7 @@ export type EventType =
   | 'run.finished'
   | 'run.error'
   | 'run.aborted'
+  | 'replay.gap'
   | 'heartbeat';
 
 export interface EventEnvelope<T = Record<string, unknown>> {
@@ -129,6 +130,13 @@ export interface RunErrorData {
   message: string;
   retryable: boolean;
   hint?: string;
+}
+
+export interface ReplayGapData {
+  after_seq: number;
+  oldest_available_seq: number | null;
+  latest_seq: number | null;
+  advance_cursor: boolean;
 }
 
 /** 终态事件（收到即关闭连接）。 */

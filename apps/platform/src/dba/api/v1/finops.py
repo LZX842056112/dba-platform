@@ -195,25 +195,34 @@ async def upsert_budget(
     return {"budget_id": budget_id}
 
 
-@router.patch("/budgets/{budget_id}")
+@router.patch("/budgets/{budget_id}", response_model=None)
 async def patch_budget(
     budget_id: int,
     payload: dict[str, Any],
     _admin: Annotated[Principal, Depends(require_roles(ADMIN_ROLE_ID))],
     container: Annotated[Container, Depends(get_container)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """``PATCH /finops/budgets/{id}``（admin，版本 +1）。"""
     repos = storage_or_default(container)
     if repos is None:
-        return {"version": 0}
-    row = dict(payload)
-    row["id"] = budget_id
+        return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
     try:
-        new_id = int(await repos.budget.upsert(row))
+        existing = await repos.budget.get(budget_id)
+        if existing is None:
+            return JSONResponse(status_code=404, content={"code": "40400", "message": "预算不存在"})
+        # 预算采用追加版本；沿用原作用域，生成新主键，避免用旧 id 插入而造成假成功。
+        row = {**existing, **payload}
+        row.pop("id", None)
+        row.pop("created_at", None)
+        row.pop("updated_at", None)
+        for key in ("scope_type", "scope_id", "period"):
+            row[key] = existing[key]
+        row["version"] = int(existing.get("version", 1)) + 1
+        await repos.budget.upsert(row)
     except Exception as exc:  # noqa: BLE001
         logger.warning("预算更新失败：%s", exc)
-        return {"version": 0}
-    return {"version": new_id}
+        return JSONResponse(status_code=500, content={"code": "50000", "message": "预算更新失败"})
+    return {"version": int(row["version"])}
 
 
 @router.get("/budgets/{budget_id}/usage")
@@ -238,12 +247,11 @@ async def list_prices(
     model: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/prices``（admin）。"""
-    _ = (provider, model)
     repos = storage_or_default(container)
     if repos is None:
         return []
     try:
-        return [dict(r) for r in await repos.price_book.list_active()]
+        return [dict(r) for r in await repos.price_book.list_active(provider, model)]
     except Exception as exc:  # noqa: BLE001
         logger.warning("价格表查询失败：%s", exc)
         return []

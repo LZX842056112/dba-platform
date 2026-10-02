@@ -79,6 +79,19 @@ async def test_readonly_accepts_single_readonly_select() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
+        "SELECT DATE_FORMAT(created_at, '%Y-%m') FROM t_order",
+        "SELECT DATE_SUB(CURDATE(), INTERVAL 7 DAY) FROM t_order",
+    ],
+)
+async def test_readonly_allows_mysql_date_functions(sql: str) -> None:
+    """MySQL 白名单按方言函数名校验，避免 SQLGlot 内部 AST 名称误拒。"""
+    res = await ReadonlyGuard(allowed_tables={"t_order"}).check(sql, make_ctx(), None)
+    assert res.ok is True
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
         "SELECT id FROM t_order WHERE id = 1 AND v = 2",
         "SELECT id FROM t_order WHERE id = 1 OR v = 2",
         "SELECT id FROM t_order WHERE NOT (id = 1)",
@@ -201,6 +214,12 @@ async def test_readonly_rejects_function_outside_whitelist() -> None:
         guard.check("SELECT evil_func(id) FROM t_order", make_ctx(), None),
         "SQL_FUNCTION_NOT_ALLOWED",
     )
+
+
+async def test_readonly_unknown_function_error_keeps_mysql_function_name() -> None:
+    guard = ReadonlyGuard(allowed_tables={"t_order"})
+    with pytest.raises(SqlGuardError, match="evil_func"):
+        await guard.check("SELECT evil_func(id) FROM t_order", make_ctx(), None)
 
 
 async def test_readonly_allows_extra_function_when_configured() -> None:

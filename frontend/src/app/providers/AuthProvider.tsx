@@ -2,13 +2,13 @@
 // SSE 不走这里——EventSource 带不上 Authorization，改用一次性 stream_ticket（P0-7）。
 
 import { useEffect, type ReactNode } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Outlet } from 'react-router-dom';
 import { setAuthToken } from '../../api/client';
 
 const TOKEN_KEY = 'dba_token';
 
 interface Props {
-  children: ReactNode;
+  children?: ReactNode;
 }
 
 export function AuthProvider({ children }: Props) {
@@ -24,7 +24,7 @@ export function AuthProvider({ children }: Props) {
 export function RequireAuth({ children }: Props) {
   const token = window.localStorage.getItem(TOKEN_KEY);
   if (!token) return <Navigate to="/login" replace />;
-  return <>{children}</>;
+  return <>{children ?? <Outlet />}</>;
 }
 
 export function login(token: string): void {

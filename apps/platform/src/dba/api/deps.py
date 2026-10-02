@@ -17,7 +17,8 @@ import time
 from typing import Annotated, Any
 
 from dba_runtime import DbaError
-from fastapi import Depends, Header, Query, Request
+from fastapi import Depends, Header, Query, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from dba.config import Settings
 from dba.di import Container
@@ -30,6 +31,9 @@ class AuthError(DbaError):
     code = "40100"
     symbol = "UNAUTHENTICATED"
     http_status = 401
+
+
+_BEARER_AUTH = HTTPBearer(auto_error=False)
 
 
 class Principal:
@@ -133,11 +137,13 @@ def get_container(request: Request) -> Container:
     return container
 
 
-def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
+def bearer_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_BEARER_AUTH)] = None,
+) -> str:
     """提取 ``Authorization: Bearer <JWT>``。"""
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise AuthError("缺少 Bearer Token")
-    return authorization[7:].strip()
+    return credentials.credentials.strip()
 
 
 def get_current_principal(

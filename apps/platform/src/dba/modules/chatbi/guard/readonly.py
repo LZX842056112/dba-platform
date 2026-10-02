@@ -69,6 +69,8 @@ _DANGEROUS_FUNCTIONS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+_MYSQL_CALL_NAME = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_$]*)\s*\(")
+
 #: ★ sqlglot 把「**谓词构造**」也归入 ``exp.Func``——它们**不是函数**，必须整体从
 #:   函数白名单判定中排除。同一个坑已踩过两次，故按「谓词构造」统一处理（而非逐个补丁）：
 #:
@@ -369,6 +371,9 @@ def _function_names(tree: Any) -> set[str]:
     谓词**（``WHERE EXISTS (SELECT ...)``）都会被误判成「使用了白名单外的函数」而拒绝——
     这是行级注入后第二次校验必然踩中的坑（注入结果几乎总含 ``AND``）。
     它们是**谓词/运算符**，不是函数，不应参与函数白名单判定。
+
+    输入：按 MySQL 方言解析的 SQLGlot AST。输出：AST 中真实函数名的集合。
+    注意：匿名函数保留 SQL 中名称；方言特定节点按 MySQL 生成结果还原名称后校验。
     """
     names: set[str] = set()
     for node in tree.find_all(exp.Func):
@@ -379,5 +384,9 @@ def _function_names(tree: Any) -> set[str]:
         if isinstance(node, exp.Anonymous):
             names.add(node.name)
         else:
-            names.add(node.sql_name())
+            # SQLGlot 用通用 AST 名称表示部分 MySQL 函数（如 DATE_FORMAT -> TIME_TO_STR）。
+            # 按 MySQL 方言还原可见函数名再做白名单校验，避免内部节点名造成合法 SQL 误拒。
+            rendered = node.sql(dialect="mysql")
+            match = _MYSQL_CALL_NAME.match(rendered)
+            names.add(match.group(1) if match else node.sql_name())
     return names

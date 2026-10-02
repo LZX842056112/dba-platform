@@ -113,6 +113,7 @@ class RedisProgressWriter:
 
     MAX = 200
     TTL_S = 3600
+    META_TTL_S = 86400
 
     def __init__(self, storage: RedisStorage) -> None:
         self._storage = storage
@@ -121,6 +122,10 @@ class RedisProgressWriter:
     def _key(trace_id: str) -> str:
         return f"run:progress:{trace_id}"
 
+    @staticmethod
+    def _meta_key(trace_id: str) -> str:
+        return f"run:progress:meta:{trace_id}"
+
     async def write(self, trace_id: str, envelope: dict[str, Any]) -> None:
         import json  # noqa: PLC0415
 
@@ -128,17 +133,35 @@ class RedisProgressWriter:
         await self._storage.client.rpush(key, json.dumps(envelope, ensure_ascii=False))
         await self._storage.client.ltrim(key, -self.MAX, -1)
         await self._storage.client.expire(key, self.TTL_S)
+        # 单独保留最新游标一天；历史列表过期后，重连端仍可得知存在缺口。
+        meta_key = self._meta_key(trace_id)
+        await self._storage.client.hset(
+            meta_key,
+            mapping={"latest_seq": int(envelope.get("seq", 0))},
+        )
+        await self._storage.client.expire(meta_key, self.META_TTL_S)
 
     async def replay(self, trace_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
         import json  # noqa: PLC0415
 
         raw = await self._storage.client.lrange(self._key(trace_id), 0, -1)
-        out: list[dict[str, Any]] = []
-        for item in raw:
-            env = json.loads(item)
-            if int(env.get("seq", 0)) > after_seq:
-                out.append(env)
-        return out
+        events = (json.loads(item) for item in raw)
+        return [env for env in events if int(env.get("seq", 0)) > after_seq]
+
+    async def replay_page(
+        self, trace_id: str
+    ) -> tuple[list[dict[str, Any]], int | None, int | None]:
+        """读取保留事件与序号水位；水位 TTL 长于事件列表以检测完整过期。"""
+        import json  # noqa: PLC0415
+
+        raw = await self._storage.client.lrange(self._key(trace_id), 0, -1)
+        events = [json.loads(item) for item in raw]
+        oldest = min((int(event.get("seq", 0)) for event in events), default=None)
+        latest = max((int(event.get("seq", 0)) for event in events), default=None)
+        stored_latest = await self._storage.client.hget(self._meta_key(trace_id), "latest_seq")
+        if stored_latest is not None:
+            latest = max(latest or 0, int(stored_latest))
+        return events, oldest, latest
 
 
 class RedisRateLimiter:

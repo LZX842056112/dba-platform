@@ -42,7 +42,13 @@ class EventIndexRepo:
         ``write``** → 任意非 skip 请求抛 ``AttributeError``。这里把 HTTP 请求审计委托给
         ``index_run_event``（写入 ``run-event`` 别名），与 ```` 的语义一致。
         """
-        await self.index_run_event(record)
+        # Span 的 ``status`` 是 ok/error 字符串；HTTP 审计的状态码是整数，写入
+        # 独立字段以兼容同一个 strict-mapping 索引中的两种事件。
+        payload = dict(record)
+        status = payload.pop("status", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            payload["http_status"] = status
+        await self.index_run_event(payload)
 
     async def search(self, alias: str, body: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._storage.search(self._storage.alias(alias), body)

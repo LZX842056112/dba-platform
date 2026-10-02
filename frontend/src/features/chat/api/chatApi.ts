@@ -17,6 +17,14 @@ export interface SessionResult {
   session_id: string;
 }
 
+export interface ChatMessage {
+  session_id: string;
+  seq: number;
+  role: 'user' | 'assistant' | string;
+  content: string;
+  trace_id?: string | null;
+}
+
 /** 新建会话。 */
 export async function createSession(bizLineId?: number | null): Promise<SessionResult> {
   return api.post<SessionResult>('/chat/sessions', {
@@ -43,4 +51,14 @@ export async function getDashboardSpec(dashboardId: string): Promise<DashboardSp
   const spec = await api.get<Partial<DashboardSpec>>(`/dashboards/${encodeURIComponent(dashboardId)}`);
   if (!spec || Object.keys(spec).length === 0) return null;
   return spec as DashboardSpec;
+}
+
+/** 按需回查 Run span 树，用于 SSE 历史缺口后的状态恢复。 */
+export function getRunDoc(traceId: string): Promise<Record<string, unknown>> {
+  return api.get<Record<string, unknown>>(`/chat/runs/${encodeURIComponent(traceId)}`);
+}
+
+/** 拉取会话消息，恢复因 SSE 历史截断而未收到的最终回答。 */
+export function listSessionMessages(sessionId: string): Promise<ChatMessage[]> {
+  return api.get<ChatMessage[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
 }

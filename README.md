@@ -37,7 +37,7 @@ deploy/                   # Dockerfile + embedding_server.py（本地 bge-m3 向
 scripts/                  # 造数 / 连通性自检 / 一次性运维脚本
 docs/                     # 竞品对比 / 演示脚本 / 命名约定 / 代码优化说明 / 联调验证报告
 evals/                    # 评测框架 + golden 题集（32 题）+ CI 门槛
-tests/                    # e2e + QA 黑盒/契约/DoD 测试
+tests/                    # e2e（含真实浏览器全流程联调）+ QA 黑盒/契约/DoD 测试
 assets/                   # README 截图
 var/                      # 运行时数据目录（DLQ 等，不入库）
 ```
@@ -76,6 +76,9 @@ cd frontend && npm install && npm run dev     # Vite dev server（默认 5173）
 
 常用登录账号（demo）：`admin / admin123`、`analyst1 / analyst123`。
 
+> 若本机没有 `uv`，可改用虚拟环境直连：`.venv/Scripts/python.exe -m dba.cli <子命令>`、
+> `.venv/Scripts/python.exe -m uvicorn dba.main:app --port 8000`。
+
 ---
 
 ## 架构
@@ -107,7 +110,18 @@ graph TD
 ### ChatBI 七步流水线
 
 `intent` → `schema_link` → `sql_gen` → `sql_guard` → `sql_exec` → `visual` → `narrator`，
-失败时 `sql_gen` 可自愈重生成（带重试上限）。五道护栏全部 **fail-closed**。
+失败时 `sql_gen` 可自愈重生成（带重试上限）。五道护栏全部 **fail-closed**：
+
+`readonly`（只读白名单 / 单语句 / 危险构造黑名单 / 表与函数白名单）→ `dialect`（方言往返）→
+`row_scope`（AST 注入行级谓词）→ `row_scope_verify`（顶层 AND 链合取项兜底）→
+`limit`（行数上限 + `MAX_EXECUTION_TIME`）→ `dry_run`（只读账号 `EXPLAIN` 预执行）。
+
+### 前端页面
+
+登录页 + 对话页（七步进度 / SQL 折叠 / 驾驶舱出图）+ 观测 5 页（总览 / 拓扑 / Runs / Run 详情 / 异常）
++ FinOps 4 页（成本总览 / 预算与护栏 / 复用率 / 优化建议）。
+
+> 注：观测与 FinOps 的**二级页面目前无导航入口**，需直接访问 URL（见「已知问题」）。
 
 ---
 
@@ -123,30 +137,46 @@ dba eval               # 运行评测套件（--suite guard|golden|all --gate ev
 
 ---
 
-## 截图
-
-| 对话 + 驾驶舱 | 排行 + 堆叠 + 趋势 |
-|---|---|
-| ![大屏上半](assets/dashboard-top.png) | ![大屏下半](assets/dashboard-bottom.png) |
-
----
-
 ## 质量
 
 ```bash
 uv run ruff check .          # 静态检查（含分层红线）
 uv run mypy packages apps    # 严格类型检查
-uv run pytest -q             # 基线：165 passed / 29 skipped
+uv run pytest -q             # 后端测试
+cd frontend && npm run test  # 前端测试（vitest）
 ```
 
-| 检查项 | 基线结果 |
+| 检查项 | 当前结果（2026-10-03 实测） |
 |---|---|
 | ruff | All checks passed |
 | mypy（strict） | no issues in 166 source files |
-| pytest | 165 passed / 29 skipped（共 194 用例被收集） |
+| pytest | 189 passed / 29 skipped（共 218 用例被收集） |
+| vitest | 6 个文件 / 11 个用例全部通过 |
+| 前端构建 | `tsc --noEmit && vite build` 成功 |
 
 > 测试分层：`packages/*/tests` 单元 · `apps/*/tests` 应用集成 · `tests/e2e` 端到端 ·
 > `tests/qa` QA 独立黑盒/契约/DoD 复验（不依赖工程师用例，自行构造断言）。
+
+---
+
+## 全流程联调验证（真实浏览器）
+
+除了函数级 e2e，本仓库还有一套**真实 Chrome（chrome-ws / CDP）**驱动的全流程联调，覆盖
+三模块主链路、全部分支与降级路径：
+
+```bash
+bash tests/e2e/browser/run_all.sh                      # 全量（含真实模型，约 10 分钟）
+DBA_E2E_SKIP_REAL=1 bash tests/e2e/browser/run_all.sh  # 零 token（跳过真实模型）
+```
+
+阶段：预检 → 起服务 → 接口矩阵（环境/鉴权/ChatBI/观测/FinOps/跨模块）→ SQL 护栏分支（脚本化 LLM）→
+行级权限（真实库注入 + 清理）→ 故障注入（Redis / MySQL 隔离实例）→ 真实浏览器 UI 走查 →
+worker 点触发 + guard 评测 → 真实模型验收 → 降级态前端。
+
+**最新一轮结果（2026-10-03）**：285 条断言（272 通过 / 12 失败）、guard 对抗集 121/121 达标、
+真实模型两次提问均成功出屏且大屏随问题变化。明细与证据见
+[联调验证报告-2026-10-03](docs/联调验证报告-2026-10-03.md)，产物落在
+`tests/e2e/browser/artifacts/<时间戳>/`（截图 / SSE 原始帧 / 接口响应 / 服务日志）。
 
 ---
 
@@ -199,6 +229,14 @@ DBA_LLM_MODEL_ECONOMY=deepseek-chat
 
 ---
 
+## 截图
+
+| 对话 + 驾驶舱 | 排行 + 堆叠 + 趋势 |
+|---|---|
+| ![大屏上半](assets/dashboard-top.png) | ![大屏下半](assets/dashboard-bottom.png) |
+
+---
+
 ## 运维脚本（`scripts/`）
 
 | 脚本 | 用途 |
@@ -213,16 +251,18 @@ DBA_LLM_MODEL_ECONOMY=deepseek-chat
 
 ---
 
-## 已知问题（联调验证）
+## 已知问题（截至 2026-10-03）
 
-`docs/联调验证报告.md` 记录了真实浏览器 + 全量 API + SSE + 存储层核对的完整结论。当前**待修复的阻断项**：
+完整现象、复现步骤与证据见 [联调验证报告-2026-10-03](docs/联调验证报告-2026-10-03.md)：
 
-| 优先级 | 问题 | 位置 |
-|---|---|---|
-| 🔴 P0 | 真实 LLM 提问重试不收敛（`_build_retry_messages` 丢弃表清单）；前端步骤徽标与「提问」按钮永久卡死 | `modules/chatbi/agents/sql_gen.py` · 前端 `features/chat/store/runStore.ts` |
-| 🔴 P0 | 观测总览页 KPI 对象未取 `.value` → React 崩溃，且无 Error Boundary 导致整站失效 | `frontend/src/pages/observability/OverviewPage.tsx` · `components/PageBits.tsx` |
-| 🟠 P1 | Run 详情接口取数入口写错（`metering.get_run_doc` 不存在），异常被静默吞掉 | `api/v1/observability.py` · `storage/mongo/repo.py` |
-| 🟠 P1 | 护栏报错函数名失真（sqlglot 规范化名） | `modules/chatbi/guard` |
+1. **Redis 不可用未 fail-open**：限流中间件抛错未被吞掉，导致除探针外的业务接口 500（与 §7.6 降级承诺不符）。
+2. **FinOps 写接口无入参校验**：`POST /finops/budgets`、`POST /finops/prices` 传入错名/缺字段返回 500 而非 400。
+3. **上一轮遗留 3 项**：`/auth/me` 的 `username` 返回 user_id、`/chat/sessions` 泄露 Mongo `_id`、失败 Run 的 `error_code` 恒为 `null`。
+4. **记忆指标恒为 0**：`/obs/metrics/memory` 因 `'float' object is not callable` 走降级分支。
+5. **二级页面无导航入口**：观测/FinOps 的 7 个子页面需直接访问 URL。
+
+> 已修复（2026-10-03）：`PATCH /finops/budgets/{budget_id}` 返回注解缺失 `response_model=None`
+> 导致**后端整体无法启动**的阻塞缺陷（同类问题会让 `pytest` 连收集都失败）。
 
 ---
 
@@ -232,7 +272,8 @@ DBA_LLM_MODEL_ECONOMY=deepseek-chat
 - [40 分钟演示脚本](docs/demo-script.md)
 - [命名与代码组织约定](docs/conventions.md)
 - [代码优化说明](docs/代码优化说明.md)
-- [联调验证报告](docs/联调验证报告.md)
+- [联调验证报告（2026-10-03，最新）](docs/联调验证报告-2026-10-03.md)
+- [联调验证报告（2026-10-02，原始现象与证据）](docs/联调验证报告.md)
 - [评测框架说明](evals/README.md)
 
 ---

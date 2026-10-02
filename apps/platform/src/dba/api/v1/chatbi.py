@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
+from dba.api.v1._common import read_run_doc
 from dba.di import Container
 from dba.util.time import utcnow_naive as _now
 
@@ -124,12 +125,23 @@ async def delete_session(
     if mongo is None:
         return {"ok": False, "reason": "storage_unavailable"}
     session = await mongo.chat_session.get(session_id)
-    if session is not None and session.get("user_id") not in (None, principal.user_id):
+    if session is not None and session.get("user_id") != principal.user_id:
         return JSONResponse(
             status_code=403,
             content={"code": "40300", "message": "越权访问", "detail": {}, "trace_id": None},
         )
-    # 会话删除：无独立删除接口 → 标记删除（保留审计）；文档缺口登记为改进项
+    if session is not None:
+        # 原子条件更新再次校验 owner，避免读取和更新之间会话归属发生变化。
+        if not await mongo.chat_session.soft_delete(session_id, principal.user_id):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "code": "40400",
+                    "message": "会话不存在",
+                    "detail": {},
+                    "trace_id": None,
+                },
+            )
     return {"ok": True}
 
 
@@ -145,7 +157,9 @@ async def list_messages(
     if mongo is None:
         return []
     session = await mongo.chat_session.get(session_id)
-    if session is not None and session.get("user_id") not in (None, principal.user_id):
+    if session is not None and session.get("user_id") != principal.user_id:
+        return []
+    if session is not None and session.get("deleted") is True:
         return []
     try:
         return [dict(r) for r in await mongo.chat_message.list_by_session(session_id, limit=size)]
@@ -265,15 +279,7 @@ async def get_run(
     亦提供，符合 §7.4）。前缀差异登记为报告遗留问题。
     """
     _ = (principal, since, until)
-    metering = container.get("metering")
-    if metering is None:
-        return {}
-    try:
-        doc = await metering.get_run_doc(trace_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_doc 读取失败：%s", exc)
-        doc = None
-    return dict(doc or {})
+    return await read_run_doc(container, trace_id)
 
 
 @router.get("/sql-audit")
@@ -410,6 +416,12 @@ async def _record_run(
         logger.warning("run 埋点入队失败：%s", exc)
 
 
+def _run_terminal_status(value: Any) -> str:
+    """归一化流水线终态，限定为 ``run.status`` 数据库枚举中的合法值。"""
+    status = str(value or "").lower()
+    return status if status in {"success", "failed", "timeout", "aborted"} else "failed"
+
+
 async def _run_bg(
     container: Container,
     pipeline: Any,
@@ -450,16 +462,30 @@ async def _run_bg(
         #   为门槛）。若先发事件，客户端会抢在落库完成前请求 → 拿到空 spec →
         #   图表恒显示「暂无数据（数据源未内联）」（实测竞态）。
         await _persist_dashboard_spec(mongo, result.output)
-        run_status = "success" if result.status == "success" else "failed"
+        run_status = _run_terminal_status(result.status)
         await emitter.emit(
             "run.finished",
-            {"status": result.status, "steps_run": result.steps_run, "retries": result.retries},
+            {"status": run_status, "steps_run": result.steps_run, "retries": result.retries},
         )
     except Exception as exc:  # noqa: BLE001 - 后台任务必须自行兜底（否则静默丢失）
         logger.exception("ChatBI 后台 Run 失败：%s", exc)
-        run_status = "failed"
+        symbol = str(getattr(exc, "symbol", ""))
+        run_status = (
+            "timeout"
+            if isinstance(exc, TimeoutError)
+            or symbol in {"STEP_TIMEOUT", "RUN_DEADLINE_EXCEEDED"}
+            else "failed"
+        )
         run_error = str(exc)
-        await emitter.emit("run.error", {"code": "50000", "message": str(exc), "retryable": False})
+        await emitter.emit(
+            "run.error",
+            {
+                "code": "50013" if run_status == "timeout" else "50000",
+                "message": str(exc),
+                "retryable": False,
+                "status": run_status,
+            },
+        )
         await _append_message(mongo, session_id, ctx.trace_id, "assistant", f"[错误] {exc}")
     finally:
         _CANCELS.pop(ctx.trace_id, None)

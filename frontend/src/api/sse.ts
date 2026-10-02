@@ -17,6 +17,9 @@
 
 import type { EventEnvelope, EventType } from '../types/events';
 import { isTerminal } from '../types/events';
+import type { ReplayGapData } from '../types/events';
+import { getRunDoc } from '../features/chat/api/chatApi';
+import { renewStreamTicket } from '../features/chat/api/chatApi';
 
 export interface RunStreamHandlers {
   onEvent: (event: EventEnvelope) => void;
@@ -24,6 +27,7 @@ export interface RunStreamHandlers {
   onSnapshot: (snapshot: unknown) => void;
   onOpen?: () => void;
   onError?: () => void;
+  onReplayGap?: (gap: ReplayGapData) => void;
 }
 
 const MAX_RETRY = 5;
@@ -49,6 +53,7 @@ const NAMED_EVENTS: EventType[] = [
   'run.finished',
   'run.error',
   'run.aborted',
+  'replay.gap',
   'heartbeat',
 ];
 
@@ -80,10 +85,19 @@ export function openRunStream(
   let retry = 0;
   let closedByUs = false;
   let lastSeq = 0;
+  let retryTimer: number | null = null;
 
-  const connect = (): void => {
+  const loadSnapshot = (): void => {
+    closedByUs = true;
+    void getRunDoc(traceId)
+      .then(handlers.onSnapshot)
+      .catch(() => handlers.onSnapshot({}));
+  };
+
+  const connect = (currentTicket: string): void => {
     // ★ 不传 JWT（EventSource 不支持自定义请求头），改用一次性 ticket
-    const url = `${baseUrl()}/stream/runs/${encodeURIComponent(traceId)}?ticket=${encodeURIComponent(ticket)}`;
+    const cursor = lastSeq > 0 ? `&last_event_id=${lastSeq}` : '';
+    const url = `${baseUrl()}/stream/runs/${encodeURIComponent(traceId)}?ticket=${encodeURIComponent(currentTicket)}${cursor}`;
     es = new EventSource(url);
 
     es.onopen = () => {
@@ -115,7 +129,31 @@ export function openRunStream(
 
     // ★ 关键：命名事件必须逐个注册监听器
     for (const name of NAMED_EVENTS) {
-      es.addEventListener(name, makeHandler(name) as EventListener);
+      if (name === 'replay.gap') {
+        es.addEventListener(name, ((message: MessageEvent<string>) => {
+          const parsed = parseData(message.data);
+          const oldest = parsed.oldest_available_seq;
+          const latest = parsed.latest_seq;
+          if (
+            typeof parsed.after_seq !== 'number' ||
+            (oldest !== null && typeof oldest !== 'number') ||
+            (latest !== null && typeof latest !== 'number') ||
+            typeof parsed.advance_cursor !== 'boolean'
+          ) return;
+          const data: ReplayGapData = {
+            after_seq: parsed.after_seq,
+            oldest_available_seq: oldest,
+            latest_seq: latest,
+            advance_cursor: parsed.advance_cursor,
+          };
+          if (data.advance_cursor && typeof data.latest_seq === 'number') {
+            lastSeq = Math.max(lastSeq, data.latest_seq);
+          }
+          handlers.onReplayGap?.(data);
+        }) as EventListener);
+      } else {
+        es.addEventListener(name, makeHandler(name) as EventListener);
+      }
     }
     // 兜底：后端若以默认 message 事件推送，也能收到（按未命名处理，仅推进水位）
     es.onmessage = (message: MessageEvent<string>) => {
@@ -133,24 +171,25 @@ export function openRunStream(
       handlers.onError?.();
       es?.close();
       if (closedByUs) return;
-      if (retry < MAX_RETRY) {
-        retry += 1;
-        const delay = Math.min(1000 * 2 ** retry, 15000);
-        window.setTimeout(connect, delay);
-      } else {
-        // ★ 重连耗尽 → 降级为一次性拉取终态
-        void fetch(`${baseUrl()}/chat/runs/${encodeURIComponent(traceId)}`)
-          .then((r) => (r.ok ? r.json() : {}))
-          .then(handlers.onSnapshot)
-          .catch(() => handlers.onSnapshot({}));
-      }
+      if (retry >= MAX_RETRY) return loadSnapshot();
+      retry += 1;
+      const delay = Math.min(1000 * 2 ** retry, 15000);
+      retryTimer = window.setTimeout(() => {
+        // 新建 EventSource 不会继承旧实例的 Last-Event-ID；显式传水位并换新 ticket。
+        void renewStreamTicket(traceId)
+          .then(({ stream_ticket }) => {
+            if (!closedByUs) connect(stream_ticket);
+          })
+          .catch(loadSnapshot);
+      }, delay);
     };
   };
 
-  connect();
+  connect(ticket);
 
   return () => {
     closedByUs = true;
+    if (retryTimer !== null) window.clearTimeout(retryTimer);
     es?.close();
     es = null;
   };

@@ -53,6 +53,12 @@ INDEX_SPECS: tuple[IndexSpec, ...] = (
         owner="capabilities.telemetry",
         description="运行事件（span / 状态流转）",
         properties={
+            # HTTP 审计中间件写入的字段（该索引保持 dynamic: strict）。
+            "method": _keyword(),
+            "path": {"type": "keyword", "ignore_above": 2048},
+            "http_status": _long(),
+            "latency_ms": _long(),
+            "client": {"type": "ip"},
             "trace_id": _keyword(),
             "span_id": _keyword(),
             "parent_span_id": _keyword(),

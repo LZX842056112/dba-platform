@@ -15,7 +15,7 @@ export function App() {
   return (
     <QueryProvider>
       <AuthProvider>
-        <BrowserRouter>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <div className="app-shell">
             <header className="app-header">
               <strong>数据大屏 · 多 Agent 平台</strong>

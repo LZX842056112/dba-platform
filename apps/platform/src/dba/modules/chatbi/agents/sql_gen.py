@@ -2,11 +2,10 @@
 
 对齐《设计方案 v2》§6.2 与《实现要点清单》§5.9。
 
-★ 省 token 的重生成（照抄 v1 会怎样错）
--------------------------------------
-自愈回退时 v1 把**整个上下文**重喂一遍；v2 只把「失败的 SQL + 错误信息」拼进对话
-（``_build_retry_messages``），其余上下文沿用首轮的 system prompt——
-这也正是「回退只回填失败产物、不重传整包」在生成侧的对偶实现。
+★ 带约束的重生成
+-----------------
+重试复用首轮 Schema/问题上下文，并附上失败 SQL 与校验反馈；避免重试时丢失可访问表清单，
+同时让模型根据明确错误定向修复。
 """
 
 from __future__ import annotations
@@ -118,8 +117,7 @@ class SqlGeneratorAgent:
     @staticmethod
     def _build_initial_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         template = load_prompt("sql_gen") or "你是资深数据分析师，只写 MySQL 只读 SQL。"
-        schema_prompt = str(payload.get("schema_prompt") or "")
-        context = schema_prompt.strip() or _summarize(payload)
+        context = _generation_context(payload)
         return [
             {"role": "system", "content": template},
             {"role": "user", "content": context},
@@ -129,14 +127,21 @@ class SqlGeneratorAgent:
     def _build_retry_messages(
         payload: dict[str, Any], feedback: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """★ 只拼「失败的 SQL + 错误」，不重喂完整上下文（省 token）。"""
+        """构造定向重试消息。
+
+        参数：`payload` 为首轮问题、Schema 和 SQL；`feedback` 为校验/执行错误信息。
+        返回：包含系统提示与修复上下文的聊天消息列表。
+        注意：重试必须保留首轮可访问表约束，避免模型脱离数据目录重新臆造表名。
+        """
         template = load_prompt("sql_gen") or "你是资深数据分析师，只写 MySQL 只读 SQL。"
+        context = _generation_context(payload)
         failed_sql = str(payload.get("sql") or "")
         error_code = str(feedback.get("error_code") or "")
         error_message = str(feedback.get("error_message") or "")
         user = (
-            "上一版 SQL 未通过校验/执行，请只依据下面的错误修正它，\n"
-            "不要重述问题背景，也不要输出多余解释。\n\n"
+            "请结合原始问题、可访问表和 Schema 上下文修复下面未通过校验/执行的 SQL。\n"
+            "不得访问可访问表清单之外的表，也不要输出多余解释。\n\n"
+            f"首轮生成上下文：\n{context}\n\n"
             f"失败 SQL：\n```sql\n{failed_sql}\n```\n\n"
             f"错误码：{error_code}\n错误信息：{error_message}\n"
         )
@@ -149,6 +154,12 @@ class SqlGeneratorAgent:
     def _confidence(result: Any) -> float | None:
         finish = getattr(result, "finish_reason", None)
         return 0.8 if finish in (None, "stop") else 0.5
+
+
+def _generation_context(payload: dict[str, Any]) -> str:
+    """统一生成首轮与重试共用的 Schema/问题上下文。"""
+    schema_prompt = str(payload.get("schema_prompt") or "").strip()
+    return schema_prompt or _summarize(payload)
 
 
 def _summarize(payload: dict[str, Any]) -> str:

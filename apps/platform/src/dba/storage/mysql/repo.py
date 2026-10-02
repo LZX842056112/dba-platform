@@ -179,6 +179,29 @@ class RowScopeRuleRepo(_Repo):
 
 
 class SemMetricRepo(_Repo):
+    async def insert(self, row: Row) -> int:
+        result = await self._execute(sa.insert(m.SemMetric).values(**row))
+        return int(result.inserted_primary_key[0])
+
+    async def patch(
+        self, code: str, biz_line_id: int | None, values: Row
+    ) -> Row | None:
+        """原子更新口径字段并递增持久化版本；无匹配记录时返回 ``None``。"""
+        # None 代表平台级管理员；只有绑定业务线的管理员才需要限制更新范围。
+        conditions = [m.SemMetric.metric_code == code, m.SemMetric.status == 1]
+        if biz_line_id is not None:
+            conditions.append(m.SemMetric.biz_line_id == biz_line_id)
+        stmt = (
+            sa.update(m.SemMetric)
+            .where(*conditions)
+            .values(**values, version=m.SemMetric.version + 1)
+        )
+        result = await self._execute(stmt)
+        if not result.rowcount:
+            return None
+        select_stmt = sa.select(m.SemMetric.__table__).where(*conditions)
+        return await self._fetch_one(select_stmt)
+
     async def search(self, keyword: str, biz_line_id: int | None, limit: int = 8) -> list[Row]:
         like = f"%{keyword}%"
         conds = [
@@ -542,12 +565,19 @@ class PriceBookRepo(_Repo):
     async def upsert(self, row: Row) -> None:
         await self._execute(sa.insert(m.PriceBook).values(**row))
 
-    async def list_active(self) -> list[Row]:
+    async def list_active(
+        self, provider: str | None = None, model: str | None = None
+    ) -> list[Row]:
         now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
-        stmt = sa.select(m.PriceBook.__table__).where(
+        conditions = [
             m.PriceBook.effective_from <= now,
             sa.or_(m.PriceBook.effective_to.is_(None), m.PriceBook.effective_to > now),
-        )
+        ]
+        if provider:
+            conditions.append(m.PriceBook.provider == provider)
+        if model:
+            conditions.append(m.PriceBook.model == model)
+        stmt = sa.select(m.PriceBook.__table__).where(*conditions)
         return await self._fetch(stmt)
 
 
@@ -854,6 +884,24 @@ class SkillRegistryRepo(_Repo):
         stmt = sa.select(m.SkillRegistry.__table__).where(*conds).limit(10)
         return await self._fetch(stmt)
 
+    async def list_for_observability(
+        self, biz_line_id: int | None, is_dead: bool | None
+    ) -> list[Row]:
+        """列出技能，并在显式指定时精确筛选死技能标志。"""
+        if is_dead is None or not is_dead:
+            conds = [m.SkillRegistry.status == "active", m.SkillRegistry.is_dead == 0]
+        else:
+            conds = [m.SkillRegistry.is_dead == 1]
+        if biz_line_id is not None:
+            conds.append(
+                sa.or_(
+                    m.SkillRegistry.biz_line_id == biz_line_id,
+                    m.SkillRegistry.biz_line_id.is_(None),
+                )
+            )
+        stmt = sa.select(m.SkillRegistry.__table__).where(*conds).limit(100)
+        return await self._fetch(stmt)
+
     async def upsert(self, row: Row) -> int:
         existing = await self._fetch_one(
             sa.select(m.SkillRegistry.__table__).where(
@@ -987,6 +1035,18 @@ class AlertEventRepo(_Repo):
                 acked_by=user_id,
                 acked_at=dt.datetime.now(dt.UTC).replace(tzinfo=None),
             )
+        )
+        return int(result.rowcount or 0)
+
+    async def resolve(self, alert_id: int) -> int:
+        """将未处理或已确认的告警收敛到 resolved 终态。"""
+        result = await self._execute(
+            sa.update(m.AlertEvent)
+            .where(
+                m.AlertEvent.id == alert_id,
+                m.AlertEvent.status.in_(("open", "acked")),
+            )
+            .values(status="resolved")
         )
         return int(result.rowcount or 0)
 

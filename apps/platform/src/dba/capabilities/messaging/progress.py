@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["ProgressEvent", "ProgressPublisher"]
+__all__ = ["ProgressEvent", "ProgressPublisher", "ProgressReplay"]
 
 
 @dataclass
@@ -47,6 +47,16 @@ class ProgressEvent:
 
         payload = json.dumps(self.data, ensure_ascii=False)
         return f"id: {self.seq}\nevent: {self.event}\ndata: {payload}\n\n"
+
+
+@dataclass
+class ProgressReplay:
+    """有限保留窗口中的事件及其游标范围，用于检测 SSE 历史缺口。"""
+
+    events: list[ProgressEvent]
+    oldest_seq: int | None
+    latest_seq: int | None
+    has_gap: bool
 
 
 class ProgressPublisher:
@@ -89,6 +99,41 @@ class ProgressPublisher:
                 )
             )
         return events
+
+    async def replay_page(self, trace_id: str, *, after_seq: int = 0) -> ProgressReplay:
+        """读取当前保留窗口并指出调用方游标之前是否有已过期事件。"""
+        page_reader = getattr(self._writer, "replay_page", None)
+        if page_reader is None:
+            raws = await self._writer.replay(trace_id, after_seq=0)
+            latest = max((int(row.get("seq", 0)) for row in raws), default=None)
+        else:
+            raws, _oldest, latest = await page_reader(trace_id)
+        events = [
+            ProgressEvent(
+                trace_id=str(raw.get("trace_id", trace_id)),
+                seq=int(raw.get("seq", 0)),
+                event=str(raw.get("event", "message")),
+                data=dict(raw.get("data") or {}),
+                ts_ms=int(raw.get("ts_ms", 0)),
+            )
+            for raw in raws
+        ]
+        oldest = min((event.seq for event in events), default=None)
+        available_latest = max((event.seq for event in events), default=None)
+        latest = max(
+            (value for value in (latest, available_latest) if value is not None), default=None
+        )
+        has_gap = (
+            after_seq < oldest - 1
+            if oldest is not None
+            else latest is not None and after_seq < latest
+        )
+        return ProgressReplay(
+            events=[event for event in events if event.seq > after_seq],
+            oldest_seq=oldest,
+            latest_seq=latest,
+            has_gap=has_gap,
+        )
 
     def forget(self, trace_id: str) -> None:
         """Run 结束后释放进程内 seq 计数（Redis 侧由 TTL 清理）。"""

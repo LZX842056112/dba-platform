@@ -83,6 +83,13 @@ class EsStorage:
                     index=bootstrap,
                     aliases={template_name: {"is_write_index": True}},
                 )
+            if spec.suffix == "run-event":
+                # 更新已有 concrete index；仅更新 template 不会修复当前 write index。
+                existing = await self._client.indices.get_alias(name=template_name)
+                for index_name in existing:
+                    await self._client.indices.put_mapping(
+                        index=index_name, properties=spec.properties
+                    )
         try:
             await self._client.indices.exists_alias(name=f"{self._prefix}-run-event")
         except NotFoundError:  # pragma: no cover
