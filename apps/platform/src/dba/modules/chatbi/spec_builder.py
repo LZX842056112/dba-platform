@@ -36,6 +36,7 @@ from dba.schemas.dashboard import (
     PanelStyle,
     SpecMeta,
 )
+from dba.util.jsonx import loads_object, loads_or
 
 __all__ = ["DashboardSpecBuilder"]
 
@@ -330,41 +331,22 @@ class DashboardSpecBuilder:
     # ── 内部：面板来源 ───────────────────────────────────────────
     @staticmethod
     def _skill_panels(skill_spec: dict[str, Any]) -> list[dict[str, Any]]:
+        """从技能定义取面板模板（``panels`` 或 ``steps_json`` 字段，可能是 JSON 字符串）。"""
         raw = skill_spec.get("panels") or skill_spec.get("steps_json") or []
         if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError:
-                return []
+            raw = loads_or(raw, [])
         if isinstance(raw, list):
             return [dict(p) for p in raw if isinstance(p, dict)]
         return []
 
     @staticmethod
     def _parse_llm_panels(raw_text: str) -> list[dict[str, Any]]:
-        text = raw_text.strip()
-        if not text:
-            return []
-        # 容错：剥离 ```json 围栏，取第一个 { ... } 块
-        if "```" in text:
-            parts = text.split("```")
-            for part in parts:
-                candidate = part.strip()
-                if candidate.startswith("json"):
-                    candidate = candidate[4:].strip()
-                if candidate.startswith("{"):
-                    text = candidate
-                    break
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            start, end = text.find("{"), text.rfind("}")
-            if start == -1 or end <= start:
-                return []
-            try:
-                data = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                return []
+        """解析 LLM 返回的大屏 JSON，取出 ``panels`` 列表。
+
+        输入：模型原始输出（可能夹带 ```json 围栏或解释文字）。
+        输出：面板字典列表；结构非法 / 无 ``panels`` 时返回空列表（由上层回退到自动布局）。
+        """
+        data = loads_object(raw_text)
         panels = data.get("panels") if isinstance(data, dict) else None
         if isinstance(panels, list):
             return [dict(p) for p in panels if isinstance(p, dict)]

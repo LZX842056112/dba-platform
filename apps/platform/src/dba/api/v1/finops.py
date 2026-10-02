@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal, require_roles
-from dba.api.v1._common import parse_ts, parse_window
+from dba.api.v1._common import parse_ts, parse_window, service_or_default, storage_or_default
 from dba.di import Container
 
 __all__ = ["router"]
@@ -40,7 +40,7 @@ async def cost_summary(
 ) -> dict[str, Any]:
     """``GET /finops/cost/summary``。"""
     since, until = parse_window(from_, to, span=timedelta(days=30))
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"total": 0, "by_module": {}, "by_biz_line": {}, "by_model": {}}
     result: dict[str, Any] = await service.cost_summary(
@@ -61,7 +61,7 @@ async def cost_timeseries(
 ) -> dict[str, Any]:
     """``GET /finops/cost/timeseries``。"""
     since, until = parse_window(from_, to, span=timedelta(days=30))
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"series": []}
     result: dict[str, Any] = await service.timeseries(
@@ -81,7 +81,7 @@ async def cost_attribution(
     trace_id: Annotated[str, Query(min_length=1)],
 ) -> dict[str, Any]:
     """``GET /finops/cost/attribution``。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"trace_id": trace_id, "breakdown": []}
     result: dict[str, Any] = await service.attribution(trace_id)
@@ -97,7 +97,7 @@ async def top_spenders(
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
 ) -> list[dict[str, Any]]:
     """``GET /finops/cost/top-spenders``。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return []
     result: list[dict[str, Any]] = await service.top_spenders(
@@ -116,7 +116,7 @@ async def cache_stats(
 ) -> dict[str, Any]:
     """``GET /finops/cache/stats``。"""
     since, until = parse_window(from_, to, span=timedelta(days=30))
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"hit_rate": 0.0, "saved_micro_usd": 0, "by_task": []}
     result: dict[str, Any] = await service.cache_stats(
@@ -135,7 +135,7 @@ async def cost_coverage(
 ) -> dict[str, Any]:
     """``GET /finops/cost/coverage``——计价覆盖率（「成本可信」的第一证据）。"""
     since, until = parse_window(from_, to, span=timedelta(days=30))
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"priced_ratio": 0.0, "unpriced_calls": 0, "by_provider": []}
     result: dict[str, Any] = await service.coverage(
@@ -152,7 +152,7 @@ async def curve_reuse_vs_token(
     days: Annotated[int, Query(ge=1, le=365)] = 30,
 ) -> dict[str, Any]:
     """``GET /finops/curve/reuse-vs-token``（★ 带对照组）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"biz_line_id": biz_line_id, "days": days, "note": "finops 未装配"}
     result: dict[str, Any] = await service.curve(biz_line_id=biz_line_id, days=days)
@@ -168,7 +168,7 @@ async def list_budgets(
     period: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/budgets``（admin）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return []
     rows: list[dict[str, Any]] = await repos.budget.list(
@@ -184,7 +184,7 @@ async def upsert_budget(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any] | JSONResponse:
     """``POST /finops/budgets``（admin）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
     try:
@@ -203,7 +203,7 @@ async def patch_budget(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``PATCH /finops/budgets/{id}``（admin，版本 +1）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return {"version": 0}
     row = dict(payload)
@@ -223,7 +223,7 @@ async def budget_usage(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``GET /finops/budgets/{id}/usage``（只读，经 BudgetGuard 口径）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"consumed": 0, "reserved": 0, "remaining": 0, "breaker_state": "CLOSED"}
     result: dict[str, Any] = await service.budget_usage(budget_id)
@@ -239,7 +239,7 @@ async def list_prices(
 ) -> list[dict[str, Any]]:
     """``GET /finops/prices``（admin）。"""
     _ = (provider, model)
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return []
     try:
@@ -256,7 +256,7 @@ async def upsert_price(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any] | JSONResponse:
     """``POST /finops/prices``（admin）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
     try:
@@ -286,7 +286,7 @@ async def sync_prices(
     in-process ``price_cache``」，使新增/修改的价格即时生效，无需重启进程。
     """
     _ = payload
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     price_cache = container.get("price_cache")
     if repos is None or price_cache is None:
         return {"updated": 0, "skipped": 0, "failed": [], "note": "价格缓存未装配"}
@@ -328,7 +328,7 @@ async def list_recommendations(
     status: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/recommendations``。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return []
     result: list[dict[str, Any]] = await service.recommendations(
@@ -345,7 +345,7 @@ async def apply_recommendation(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``POST /finops/recommendations/{id}/apply``（admin，默认 dry_run）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"ok": False}
     result: dict[str, Any] = await service.apply_recommendation(
@@ -362,7 +362,7 @@ async def reject_recommendation(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``POST /finops/recommendations/{id}/reject``（admin）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"ok": False}
     result: dict[str, Any] = await service.reject_recommendation(
@@ -377,7 +377,7 @@ async def get_guardrail_policy(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``GET /finops/guardrail/policy``（admin）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {}
     result: dict[str, Any] = await service.guardrail_policy()
@@ -391,7 +391,7 @@ async def patch_guardrail_policy(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``PATCH /finops/guardrail/policy``（super_admin）。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {}
     result: dict[str, Any] = await service.update_policy(payload)
@@ -405,7 +405,7 @@ async def kill_switch(
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any]:
     """``POST /finops/guardrail/kill-switch``（super_admin）★ 全局逃生开关。"""
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return {"ok": False}
     result: dict[str, Any] = await service.kill_switch(
@@ -423,7 +423,7 @@ async def loop_alerts(
 ) -> list[dict[str, Any]]:
     """``GET /finops/loop-alerts``。"""
     since, until = parse_window(from_, to, span=timedelta(days=30))
-    service = container.get("finops_service")
+    service = service_or_default(container, "finops_service", None)
     if service is None:
         return []
     result: list[dict[str, Any]] = await service.loop_alerts(since=since, until=until)

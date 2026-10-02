@@ -420,7 +420,12 @@ class ToolCallRepo(_Repo):
 
 
 class BudgetReservationRepo(_Repo):
-    """★ P0-4：预留明细的**权威账本**（幂等 insert / settle / release）。"""
+    """★ P0-4：预留明细的**权威账本**（幂等 insert / settle / release）。
+
+    状态机：``RESERVED → SETTLED | RELEASED | EXPIRED``。
+    所有迁移都用「条件 UPDATE ... WHERE state='RESERVED'」+ ``rowcount`` 判定，
+    天然并发安全（InnoDB 行锁），不依赖先读后写；**重复调用不得改数**。
+    """
 
     async def insert_if_absent(self, row: Row) -> bool:
         stmt = (
@@ -431,16 +436,32 @@ class BudgetReservationRepo(_Repo):
         result = await self._execute(stmt)
         return int(result.rowcount or 0) > 0
 
-    async def settle(self, reservation_id: str, actual_micro_usd: int) -> Row:
-        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
-        # 条件更新：仅当处于 RESERVED 才能结算（幂等 + 并发安全）
+    async def _transition(
+        self, reservation_id: str, *, state: str, extra: Row | None = None
+    ) -> Row:
+        """执行一次预留状态迁移，并返回 ``{status, estimated_micro_usd}``。
+        ``settle`` / ``release`` 的公共骨架：先条件 UPDATE（仅 ``RESERVED`` 可迁移），
+        再读回当前行判定结果状态。抽出来是为了避免两个方法各写一遍「改数 + 读回 + 拼状态」
+        ——那一份逻辑一旦有一侧漏改（例如忘了 ``reservation_missing`` 分支），
+        就会在结算/释放两条路径上产生**不对称的账目语义**。
+
+        参数：
+          * ``reservation_id``：预留唯一键；
+          * ``state``：目标状态（``SETTLED`` / ``RELEASED``）；
+          * ``extra``：随迁移一并写入的额外列（如 ``actual_micro_usd``）。
+        返回：``{status, estimated_micro_usd}``；``status`` 取
+              ``<动作完成> | already_<当前状态> | reservation_missing``。
+        """
+        values: Row = {"state": state, "settled_at": dt.datetime.now(dt.UTC).replace(tzinfo=None)}
+        if extra:
+            values.update(extra)
         upd = (
             sa.update(m.BudgetReservation)
             .where(
                 m.BudgetReservation.reservation_id == reservation_id,
                 m.BudgetReservation.state == "RESERVED",
             )
-            .values(state="SETTLED", actual_micro_usd=actual_micro_usd, settled_at=now)
+            .values(**values)
         )
         result = await self._execute(upd)
         changed = int(result.rowcount or 0) > 0
@@ -451,41 +472,25 @@ class BudgetReservationRepo(_Repo):
         )
         if current is None:
             return {"status": "reservation_missing", "estimated_micro_usd": 0}
+        estimated = int(current["estimated_micro_usd"])
         if changed:
-            return {"status": "settled", "estimated_micro_usd": int(current["estimated_micro_usd"])}
+            # 动作名与目标状态一一对应（SETTLED→settled / RELEASED→released）
+            return {"status": state.lower(), "estimated_micro_usd": estimated}
         # 已结算 / 已释放 / 已过期：不再改数，显式返回状态供上层对账
         return {
             "status": f"already_{str(current['state']).lower()}",
-            "estimated_micro_usd": int(current["estimated_micro_usd"]),
+            "estimated_micro_usd": estimated,
         }
 
+    async def settle(self, reservation_id: str, actual_micro_usd: int) -> Row:
+        """结算预留：``RESERVED → SETTLED`` 并记实际花费；幂等（重复结算不改数）。"""
+        return await self._transition(
+            reservation_id, state="SETTLED", extra={"actual_micro_usd": actual_micro_usd}
+        )
+
     async def release(self, reservation_id: str) -> Row:
-        upd = (
-            sa.update(m.BudgetReservation)
-            .where(
-                m.BudgetReservation.reservation_id == reservation_id,
-                m.BudgetReservation.state == "RESERVED",
-            )
-            .values(state="RELEASED", settled_at=dt.datetime.now(dt.UTC).replace(tzinfo=None))
-        )
-        result = await self._execute(upd)
-        changed = int(result.rowcount or 0) > 0
-        current = await self._fetch_one(
-            sa.select(m.BudgetReservation.__table__).where(
-                m.BudgetReservation.reservation_id == reservation_id
-            )
-        )
-        if current is None:
-            return {"status": "reservation_missing", "estimated_micro_usd": 0}
-        if changed:
-            return {
-                "status": "released",
-                "estimated_micro_usd": int(current["estimated_micro_usd"]),
-            }
-        return {
-            "status": f"already_{str(current['state']).lower()}",
-            "estimated_micro_usd": int(current["estimated_micro_usd"]),
-        }
+        """释放预留：``RESERVED → RELEASED``（未真实消费时归还额度）；幂等。"""
+        return await self._transition(reservation_id, state="RELEASED")
 
     async def sum_reserved(self, budget_id: int, period_start: dt.date) -> int:
         stmt = sa.select(

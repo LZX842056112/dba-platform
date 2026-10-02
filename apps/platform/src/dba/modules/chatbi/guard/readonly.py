@@ -27,6 +27,7 @@ import sqlglot
 from dba_runtime.context import RunContext
 from sqlglot import exp
 
+from .ast_utils import physical_tables
 from .base import GuardResult, sql_guard_error
 
 __all__ = ["ReadonlyGuard", "DEFAULT_FUNCTION_WHITELIST"]
@@ -253,6 +254,22 @@ class ReadonlyGuard:
         return None
 
     async def check(self, sql: str, ctx: RunContext, scope: object | None) -> GuardResult:
+        """只读护栏判定（① 道）。
+
+        校验顺序（**顺序不可调**，每步都有原因）：
+          0. 危险构造正则（先于解析：``OUTFILE`` / ``/*!`` 会让解析器抛错，
+             若放后判定会退化成可回退的 ``SQL_PARSE_ERROR``）；
+          1. 危险函数黑名单（``sleep`` / ``load_file`` 等）；
+          2. 解析且**恰好一条语句**（拦截 ``SELECT 1; DROP TABLE x``）；
+          3. 语句类型必须是只读；
+          4. AST 层锁读构造（``FOR UPDATE`` / ``LOCK IN SHARE MODE``）；
+          5. 系统库 + 表级白名单；
+          6. 函数白名单。
+
+        输入：待校验 SQL（已解析前的原文）、上下文、权限子域（本护栏不消费）。
+        输出：``GuardResult(ok=True)``（只读护栏**不改写 SQL**，故无 ``rewritten_sql``）。
+        注意：任一判定失败即抛 ``SqlGuardError``（由链写入 deny 审计并触发 Pipeline 回退）。
+        """
         _ = (ctx, scope)
         raw = sql or ""
 
@@ -304,7 +321,7 @@ class ReadonlyGuard:
                     f"禁止访问系统库：{db}", "SQL_TABLE_NOT_ALLOWED", stage=self.name
                 )
         allowed = await self._allowed()
-        referenced = _tables_in(tree)
+        referenced = physical_tables(tree)
         if allowed is not None:
             allowed_lower = {t.lower() for t in allowed}
             illegal = {t for t in referenced if t.lower() not in allowed_lower}
@@ -333,13 +350,8 @@ class ReadonlyGuard:
 
 
 def _is_readonly(tree: Any) -> bool:
+    """是否为只读语句类型（SELECT / UNION / EXCEPT / INTERSECT）。"""
     return isinstance(tree, _READONLY_TYPES)
-
-
-def _tables_in(tree: Any) -> set[str]:
-    """物理表名集合（排除 CTE 别名）。"""
-    cte_names = {c.alias_or_name for c in tree.find_all(exp.CTE)}
-    return {t.name for t in tree.find_all(exp.Table) if t.name and t.name not in cte_names}
 
 
 def _function_names(tree: Any) -> set[str]:

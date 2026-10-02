@@ -88,6 +88,12 @@ class ModelGateway:
         ctx: RunContext,
         quality: Literal["eco", "std", "max"] | None = None,
     ) -> ModelChoice:
+        """按任务类型 / 质量档位选模型（**纯决策，无副作用**）。
+
+        输入：``task``（如 ``sql_gen``）、``ctx``、可选 ``quality`` 覆盖。
+        输出：``ModelChoice``（provider / model / max_tokens / 路由策略）。
+        注意：此方法**不预留预算、不计费**；预算三段式在 ``chat`` 里完成。
+        """
         strategy = self._task_strategy.get(
             task, _QUALITY_STRATEGY.get(quality or ctx.quality, "balanced")
         )
@@ -108,6 +114,11 @@ class ModelGateway:
     async def _complete(
         self, messages: list[dict[str, Any]], choice: ModelChoice, ctx: RunContext
     ) -> LLMResult:
+        """真正发起一次 LLM 调用；``@metered("llm")`` 装饰器负责写成本 / token 埋点。
+
+        ★ 计费的「输入 token = prompt − cached」修正由全局成本归一化器在 ``@metered``
+          内部完成（P0-3），此处不重复处理。
+        """
         _ = ctx
         return cast(
             "LLMResult", await self._llm.complete(messages, choice, timeout_s=self._timeout_s)
@@ -149,6 +160,14 @@ class ModelGateway:
 
     # ── 预算三段式 ────────────────────────────────────────────────
     async def _reserve(self, ctx: RunContext, choice: ModelChoice) -> Any | None:
+        """预算预留（**调用前**，check-and-reserve 前置）。
+
+        输入：``ctx``（含 ``budget_keys`` 作用域链）、``choice``（模型与 max_tokens）。
+        输出：``(budget, reservation_id)`` 句柄；未配置预算 / 作用域为空时返回 ``None``
+              （表示本次调用不记账，后续 settle/release 直接跳过）。
+        注意：硬上限阻断时抛 ``BudgetExceededError``（code 42901），
+              软限只发 ``budget.warning`` 事件、不阻断（依据 §6.5 默认策略）。
+        """
         if self._budget is None:
             return None
         budget = await self._resolve_budget(ctx)
@@ -173,6 +192,11 @@ class ModelGateway:
         return (budget, decision.reservation_id)
 
     async def _settle(self, hold: Any | None, result: LLMResult, choice: ModelChoice) -> None:
+        """结算预算：把预留换成**实际花费**（``reserved -= 预估``、``consumed += 实际``）。
+
+        注意：结算失败**不阻断**主链路——权威账本由 worker 对账兜底，不把计量失败
+              升级成业务失败（与埋点 DLQ 同一设计原则）。
+        """
         if hold is None or self._budget is None:
             return
         budget, reservation_id = hold
@@ -190,6 +214,10 @@ class ModelGateway:
             logger.warning("预算结算失败（已记日志，交由对账兜底）", exc_info=True)
 
     async def _release(self, hold: Any | None) -> None:
+        """释放预留：调用失败 / 超时 / 取消时归还额度（幂等；重复释放不改数）。
+
+        注意：释放失败也不抛错——预留带 ``expires_at``，超期由定时任务标记 ``EXPIRED`` 回收。
+        """
         if hold is None or self._budget is None:
             return
         budget, reservation_id = hold
@@ -201,6 +229,11 @@ class ModelGateway:
             logger.warning("预算释放失败（预留将到期自动回收）", exc_info=True)
 
     async def _resolve_budget(self, ctx: RunContext) -> Any | None:
+        """把 ``ctx.budget_keys`` 解析为具体预算对象（**从具体到宽泛**选生效者）。
+
+        输入：``ctx.budget_keys`` 形如 ``("AGENT:ag_x", "BIZ_LINE:12", "GLOBAL:*")``。
+        输出：链上第一个命中的预算；作用域为空 / 无命中 → ``None``。
+        """
         budget = self._budget
         if budget is None:
             return None
@@ -214,6 +247,11 @@ class ModelGateway:
         return await budget.resolve_chain(scopes, self._budget_period)
 
     def _cost_of(self, result: LLMResult, choice: ModelChoice) -> int:
+        """把一次调用结果归一化为 micro_usd 整数成本（无价格表时返回 0）。
+
+        ★ 这里的 0 是「未计价」而非「免费」：``CostNormalizer`` 会标 ``unknown``，
+          覆盖率看板据此暴露「有多少调用没价可查」，不会把未知静默当 0 计入总和。
+        """
         if self._cost is None:
             return 0
         cost: NormalizedCost = self._cost.normalize(
@@ -230,5 +268,6 @@ class ModelGateway:
 
     @staticmethod
     async def _emit(ctx: RunContext, event: Any, data: dict[str, Any]) -> None:
+        """发 run 级事件（无 emitter 时静默跳过，不报错）。"""
         if ctx.emitter is not None:
             await ctx.emitter.emit(event, data)

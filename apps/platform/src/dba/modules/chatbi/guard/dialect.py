@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlglot
 from dba_runtime.context import RunContext
 
+from .ast_utils import parse_one_or_deny
 from .base import GuardResult, sql_guard_error
 
 __all__ = ["DialectGuard"]
@@ -29,14 +30,22 @@ class DialectGuard:
         self.dialect = dialect
 
     async def check(self, sql: str, ctx: RunContext, scope: object | None) -> GuardResult:
+        """② 道：确认 SQL 能在目标方言下「解析 → 渲染 → 再解析」。
+
+        输入：待校验 SQL、上下文、权限子域（本护栏不消费）。
+        输出：``GuardResult(ok=True)``（**不改写 SQL**，往返只作校验）。
+        注意：本护栏只回答「目标方言能否表达」，**不判断函数是否白名单**
+              （那是 ① 只读护栏的职责，见模块 docstring 的职责拆分说明）。
+        """
         _ = (ctx, scope)
+        # 解析失败统一转 SQL_PARSE_ERROR（复用共享解析入口，避免各护栏各写一遍）
+        tree = parse_one_or_deny(sql, dialect=self.dialect, stage=self.name)
         try:
-            tree = sqlglot.parse_one(sql, dialect=self.dialect)
             rendered = tree.sql(dialect=self.dialect)
             roundtrip = sqlglot.transpile(rendered, read=self.dialect, write=self.dialect)
         except Exception as exc:  # noqa: BLE001
             raise sql_guard_error(
-                f"方言校验失败：{exc}", "SQL_PARSE_ERROR", stage=self.name
+                f"方言渲染失败：{exc}", "SQL_DIALECT_UNSUPPORTED", stage=self.name
             ) from exc
         if not roundtrip or not roundtrip[0].strip():
             raise sql_guard_error(

@@ -29,7 +29,7 @@ from dba_runtime.telemetry import (
     ToolCallRecord,
 )
 
-from .config import HARD_DEPENDENCIES, Settings
+from .config import Settings
 
 logger = logging.getLogger("dba.di")
 
@@ -428,78 +428,97 @@ class StorageBundle:
         ]
 
 
+def _load_component(
+    bundle: StorageBundle,
+    name: str,
+    loader: Callable[[], Any],
+    *,
+    assign: Callable[[Any], None],
+) -> None:
+    """统一装配一个可选存储组件（缺驱动 / 连不上时**只降级、不终止启动**）。
+
+    ``build_storage_bundle`` 里 6 个组件（mysql/redis/mongo/milvus/es/minio）此前
+    各写一遍「import → 构造 → 赋值 → 记 available」，重复 6 次且容易漏改
+    （例如新加组件时忘了在异常分支写 ``available=False``，``/ready`` 就会误报可用）。
+
+    参数：
+      * ``bundle``：待填充的存储聚合；
+      * ``name``：``available`` / ``/ready`` 中的组件名（如 ``"mysql"``）；
+      * ``loader``：真正构造实现的**惰性回调**（内部做延迟 import，缺依赖即抛异常）；
+      * ``assign``：把构造结果挂到 ``bundle`` 对应字段上的回调。
+
+    行为：成功 → ``available[name]=True``；任何异常 → ``available[name]=False`` 并记 warning。
+    注意：这里**吞掉所有异常**是有意为之——可选驱动缺失绝不能让整个应用起不来（§7.6）。
+    """
+    try:
+        assign(loader())
+        bundle.available[name] = True
+    except Exception as exc:  # noqa: BLE001 - 可选组件缺失必须降级而非崩溃
+        bundle.available[name] = False
+        logger.warning("%s 存储不可用（降级）：%s", name, exc)
+
+
 def build_storage_bundle(settings: Settings) -> StorageBundle:
     """装配存储组件；每个组件独立 try，缺驱动只记录不可用。"""
     bundle = StorageBundle()
     use_fake_redis = settings.redis_use_fake or settings.env == "test"
 
     # MySQL（含 21 表 Repository）
-    try:
+    def _make_mysql() -> Any:
         from .storage.mysql.engine import MySqlStorage  # noqa: PLC0415
         from .storage.mysql.repo import MysqlRepositories  # noqa: PLC0415
 
         storage = MySqlStorage(rw_dsn=settings.mysql_dsn, ro_dsn=settings.mysql_ro_dsn)
-        bundle.mysql = storage
         bundle.repos = MysqlRepositories(storage.rw_engine)
-        bundle.available["mysql"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["mysql"] = False
-        logger.warning("MySQL 存储不可用（降级）：%s", exc)
+        return storage
+
+    _load_component(bundle, "mysql", _make_mysql, assign=lambda v: setattr(bundle, "mysql", v))
 
     # Redis（预算快路径 / 进度 / 限流）
-    try:
+    def _make_redis() -> Any:
         from .storage.redis.client import RedisStorage  # noqa: PLC0415
 
-        redis = RedisStorage(settings.redis_dsn, use_fake=use_fake_redis)
-        bundle.redis = redis
-        bundle.available["redis"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["redis"] = False
-        logger.warning("Redis 存储不可用（降级）：%s", exc)
+        return RedisStorage(settings.redis_dsn, use_fake=use_fake_redis)
+
+    _load_component(bundle, "redis", _make_redis, assign=lambda v: setattr(bundle, "redis", v))
 
     # MongoDB
-    try:
+    def _make_mongo() -> Any:
         from .storage.mongo.client import MongoStorage  # noqa: PLC0415
         from .storage.mongo.repo import MongoRepositories  # noqa: PLC0415
 
         mongo = MongoStorage(settings.mongo_dsn, settings.mongo_db)
-        bundle.mongo = mongo
         bundle.mongo_repos = MongoRepositories(mongo)
-        bundle.available["mongodb"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["mongodb"] = False
-        logger.warning("MongoDB 存储不可用（降级）：%s", exc)
+        return mongo
+
+    _load_component(bundle, "mongodb", _make_mongo, assign=lambda v: setattr(bundle, "mongo", v))
 
     # Milvus
-    try:
+    def _make_milvus() -> Any:
         from .storage.milvus.client import MilvusStorage  # noqa: PLC0415
         from .storage.milvus.repo import VectorRepo  # noqa: PLC0415
 
         milvus = MilvusStorage(
             settings.milvus_host, settings.milvus_port, dim=settings.embedding_dim
         )
-        bundle.milvus = milvus
         bundle.vector = VectorRepo(milvus)
-        bundle.available["milvus"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["milvus"] = False
-        logger.warning("Milvus 存储不可用（降级）：%s", exc)
+        return milvus
+
+    _load_component(bundle, "milvus", _make_milvus, assign=lambda v: setattr(bundle, "milvus", v))
 
     # Elasticsearch
-    try:
+    def _make_es() -> Any:
         from .storage.es.client import EsStorage  # noqa: PLC0415
         from .storage.es.repo import EventIndexRepo  # noqa: PLC0415
 
         es = EsStorage(settings.es_url, prefix=settings.es_index_prefix)
-        bundle.es = es
         bundle.es_repo = EventIndexRepo(es)
-        bundle.available["elasticsearch"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["elasticsearch"] = False
-        logger.warning("Elasticsearch 存储不可用（降级）：%s", exc)
+        return es
+
+    _load_component(bundle, "elasticsearch", _make_es, assign=lambda v: setattr(bundle, "es", v))
 
     # MinIO
-    try:
+    def _make_minio() -> Any:
         from .storage.minio.client import MinioStorage  # noqa: PLC0415
         from .storage.minio.repo import ObjectStoreRepo  # noqa: PLC0415
 
@@ -509,12 +528,10 @@ def build_storage_bundle(settings: Settings) -> StorageBundle:
             settings.minio_secret_key,
             secure=settings.minio_secure,
         )
-        bundle.minio = minio
         bundle.object_repo = ObjectStoreRepo(minio)
-        bundle.available["minio"] = True
-    except Exception as exc:  # noqa: BLE001
-        bundle.available["minio"] = False
-        logger.warning("MinIO 存储不可用（降级）：%s", exc)
+        return minio
+
+    _load_component(bundle, "minio", _make_minio, assign=lambda v: setattr(bundle, "minio", v))
 
     return bundle
 
@@ -615,10 +632,6 @@ class Container:
                     await closer()
                 except Exception:  # noqa: BLE001
                     logger.warning("关闭容器资源失败", exc_info=True)
-
-
-def is_hard_dependency(name: str) -> bool:
-    return name in HARD_DEPENDENCIES
 
 
 def _filter_columns(payload: dict[str, Any], table: Any) -> dict[str, Any]:
@@ -904,7 +917,7 @@ def build_container(settings: Settings) -> Container:
     # ── L4：路由网关（内核 ModelRouter Protocol 的实现）────────────
     from .capabilities.routing import ModelGateway, ModelRouter  # noqa: PLC0415
 
-    llm = _build_llm(settings, container)
+    llm = _build_llm(settings)
     gateway = ModelGateway(
         router=container.get("model_router") or ModelRouter(),
         llm=llm,
@@ -1004,7 +1017,7 @@ def build_container(settings: Settings) -> Container:
     return container
 
 
-def _build_llm(settings: Settings, container: Container) -> Any:
+def _build_llm(settings: Settings) -> Any:
     """构造 LLM 客户端；无 Key / 测试环境 / 未放行的 dev 回退到确定性演示替身。
 
     ★ 三态（优先级由高到低）：
@@ -1012,6 +1025,8 @@ def _build_llm(settings: Settings, container: Container) -> Any:
       2) ``DBA_ENV=test`` 或 API Key 为空                  → 替身
       3) ``DBA_ENV=dev`` 且未设 ``DBA_LLM_ALLOW_DEV=true`` → 替身（开发期默认不打付费 API）
       4) 否则                                              → 真实模型
+
+    返回：``OpenAIClient`` 或 ``DemoLLMClient``（降级替身，**不是**真实模型）。
     """
     use_fake = (
         settings.llm_use_fake
@@ -1031,7 +1046,6 @@ def _build_llm(settings: Settings, container: Container) -> Any:
         )
     except Exception as exc:  # noqa: BLE001 - 缺 dba[llm] 依赖时降级（并告警）
         logger.warning("真实 LLM 客户端不可用，降级为演示替身：%s", exc)
-        _ = container
         return DemoLLMClient()
 
 

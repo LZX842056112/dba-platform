@@ -122,6 +122,26 @@ class Pipeline:
     async def _run(
         self, payload: dict[str, Any], ctx: RunContext, emitter: EventEmitter
     ) -> PipelineResult:
+        """状态机主循环（``while state is not None``）。
+
+        输入：``payload`` 初始数据包（步骤间以 ``data.update(out.data)`` 累积）、
+              ``ctx``（携带 deadline / cancel_token）、``emitter``（事件出口）。
+        输出：``PipelineResult``——``success`` / ``failed`` / ``aborted`` / ``timeout``。
+
+        每轮循环依次检查（**顺序即优先级**）：
+          1. 整次 Run 墙钟预算超时 → ``timeout``（防「各步都不超时但总时长爆炸」）；
+          2. 协作式取消信号 → ``aborted``；
+          3. 单步访问次数上限 → ``failed``（防 ``goto`` 配成环打光 token）；
+          4. 执行步骤（含单步 ``asyncio.timeout``）。
+
+        失败分支：
+          * ``SQL_PERMISSION_DENIED`` → **短路不重试**（防止模型试错绕过权限）；
+          * ``on_error="retry"`` → 原地重试；
+          * ``on_error="goto"`` → 清掉失败步骤 ``produces`` 声明的产物、注入
+            ``_feedback`` 结构化反馈后回退到 ``goto_step``。
+
+        注意：成功一步即清 ``_feedback``（否则会污染后续所有步骤的输入）。
+        """
         state: str | None = self.entry
         data: dict[str, Any] = dict(payload)
         retries = 0

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
-from dba.api.v1._common import parse_window
+from dba.api.v1._common import parse_window, service_or_default, storage_or_default
 from dba.di import Container
 
 __all__ = ["router"]
@@ -47,7 +47,7 @@ async def overview(
 ) -> dict[str, Any]:
     """``GET /obs/overview``：四张 KPI 卡 + 趋势 + top agents。"""
     since, until = parse_window(from_, to, span=timedelta(hours=24))
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"kpi_cards": {}, "trend": {"series": []}, "top_agents": []}
     return dict(await service.overview(since=since, until=until, biz_line_id=biz_line_id))
@@ -60,7 +60,7 @@ async def topology(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /obs/topology``。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"nodes": [], "edges": []}
     graph: dict[str, Any] = await service.topology(biz_line_id)
@@ -75,7 +75,7 @@ async def list_agents(
     status: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /obs/agents``。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return []
     rows: list[dict[str, Any]] = await service.agents(biz_line_id=biz_line_id, status=status)
@@ -89,7 +89,7 @@ async def get_agent(
     _principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict[str, Any]:
     """``GET /obs/agents/{agent_uid}``。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {}
     result: dict[str, Any] = await service.agent_detail(agent_uid)
@@ -103,7 +103,7 @@ async def register_agent(
     _token: Annotated[str, Depends(_require_agent_token)],
 ) -> dict[str, Any] | JSONResponse:
     """``POST /obs/agents/register``（AgentToken）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return JSONResponse(status_code=503, content={"code": "50301", "message": "存储不可用"})
     row = {
@@ -132,7 +132,7 @@ async def agent_heartbeat(
 ) -> dict[str, Any]:
     """``POST /obs/agents/{agent_uid}/heartbeat``（AgentToken）。"""
     _ = payload
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return {"ok": False, "reason": "storage_unavailable"}
     try:
@@ -155,7 +155,7 @@ async def list_runs(
 ) -> list[dict[str, Any]]:
     """``GET /obs/runs``。"""
     _ = agent_uid
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return []
     since, until = parse_window(from_, to, span=timedelta(hours=24))
@@ -204,7 +204,7 @@ async def self_cost(
 ) -> dict[str, Any]:
     """★ ``GET /obs/self-cost``：平台自身（03/10）消耗，不进业务成本曲线（P1-4）。"""
     since, until = parse_window(from_, to, span=timedelta(hours=24))
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"by_module": {}, "total_cost_micro_usd": 0, "total_runs": 0}
     cost: dict[str, Any] = await service.self_cost(since=since, until=until)
@@ -224,7 +224,7 @@ async def metrics_timeseries(
 ) -> dict[str, Any]:
     """``GET /obs/metrics/timeseries``（只读 ``metric_daily``，经 owner 服务）。"""
     since, until = parse_window(from_, to, span=timedelta(hours=24))
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"series": []}
     series = await service.timeseries(
@@ -245,7 +245,7 @@ async def metrics_skills(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /obs/metrics/skills``：总数 / 复用率 / 死技能。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"total": 0, "reuse_rate": 0.0, "dead_count": 0, "series": []}
     metrics = await service.skill_metrics(datetime.now(UTC).date(), biz_line_id)
@@ -267,7 +267,7 @@ async def metrics_memory(
     biz_line_id: Annotated[int | None, Query()] = None,
 ) -> dict[str, Any]:
     """``GET /obs/metrics/memory``：记忆命中率。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {"hit_rate": 0.0, "lookups": 0, "hits": 0, "series": []}
     metrics = await service.memory_metrics(datetime.now(UTC).date(), biz_line_id)
@@ -290,7 +290,7 @@ async def obs_skills(
 ) -> list[dict[str, Any]]:
     """``GET /obs/skills``（技能 + 统计）。"""
     _ = is_dead
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return []
     try:
@@ -310,7 +310,7 @@ async def list_anomalies(
     severity: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /obs/anomalies``（``alert_event``）。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return []
     rows: list[dict[str, Any]] = await service.anomalies(
@@ -326,17 +326,15 @@ async def anomaly_detail(
     _principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict[str, Any]:
     """``GET /obs/anomalies/{id}``：``alert_event`` + ``anomaly_report``（U14）。"""
-    service = container.get("observability_service")
+    service = service_or_default(container, "observability_service", None)
     if service is None:
         return {}
     return await service.anomaly_detail(alert_id) or {}
 
 
-async def _ack_alert(
-    alert_id: int, container: Container, principal: Principal
-) -> dict[str, Any]:
+async def _ack_alert(alert_id: int, container: Container, principal: Principal) -> dict[str, Any]:
     """确认一条异常（``ack`` 与 ``resolve`` 共用同一实现）。"""
-    repos = container.get("repos")
+    repos = storage_or_default(container)
     if repos is None:
         return {"ok": False, "reason": "storage_unavailable"}
     try:

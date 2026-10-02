@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import sqlglot
 from dba_runtime.context import RunContext
 from sqlglot import exp
 
-from .base import GuardResult, sql_guard_error
+from .ast_utils import parse_one_or_deny
+from .base import GuardResult
 
 __all__ = ["LimitGuard", "apply_limit", "apply_max_execution_time"]
 
@@ -32,14 +32,14 @@ class LimitGuard:
         self.timeout_s = timeout_s
 
     async def check(self, sql: str, ctx: RunContext, scope: object | None) -> GuardResult:
-        _ = (ctx, scope)
-        try:
-            tree = sqlglot.parse_one(sql, dialect="mysql")
-        except Exception as exc:  # noqa: BLE001
-            raise sql_guard_error(
-                f"语法解析失败：{exc}", "SQL_PARSE_ERROR", stage=self.name
-            ) from exc
+        """④ 道：补 / 压 ``LIMIT``，再挂 ``MAX_EXECUTION_TIME`` 优化器提示。
 
+        输入：待改写 SQL、上下文、权限子域（本护栏不消费）。
+        输出：``GuardResult(ok=True, rewritten_sql=...)``——**总是返回改写后的 SQL**。
+        注意：提示挂载失败不抛错（会话层 + 应用层 timeout 仍生效，见模块 docstring）。
+        """
+        _ = (ctx, scope)
+        tree = parse_one_or_deny(sql, stage=self.name)
         tree = apply_limit(tree, self.max_rows)
         tree = apply_max_execution_time(tree, int(self.timeout_s * 1000))
         return GuardResult(ok=True, rewritten_sql=tree.sql(dialect="mysql"))

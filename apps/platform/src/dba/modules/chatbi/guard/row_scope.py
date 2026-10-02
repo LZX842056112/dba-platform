@@ -21,17 +21,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-import sqlglot
 from dba_runtime.context import RunContext
 from sqlglot import exp
 
 from dba.capabilities.memory.scope import build_scope_hash
+from dba.util.jsonx import loads_or
 
+from .ast_utils import alias_map as _alias_map
+from .ast_utils import column_usage as _column_usage
+from .ast_utils import parse_one_or_deny
+from .ast_utils import physical_tables as _tables_in
 from .base import GuardResult, sql_guard_error
 
 __all__ = [
@@ -133,11 +136,9 @@ def _values_of(rule: dict[str, Any], user_vars: dict[str, Any]) -> list[Any]:
         return list(raw) if isinstance(raw, (list, tuple)) else [raw]
 
     raw_json = rule.get("value_json")
+    # ★ 统一走 loads_or：字符串先尝试解析为 JSON 列表/标量，非法则按「原样单值」处理
     if isinstance(raw_json, str):
-        try:
-            raw_json = json.loads(raw_json)
-        except json.JSONDecodeError:
-            logger.warning("row_scope_rule.value_json 非法 JSON，按单值处理")
+        raw_json = loads_or(raw_json, raw_json)
     if isinstance(raw_json, (list, tuple)):
         return list(raw_json)
     if raw_json is None:
@@ -198,16 +199,21 @@ class RowScopeCompiler:
 # join 路径解析（维表情形）
 # ═════════════════════════════════════════════════════════════════════
 def _parse_join_path(raw: Any) -> JoinPath | None:
+    """解析 join_path 配置（支持 ``str`` 表名 / JSON 字符串 / ``dict``）。
+
+    合法形态：``"t_dim"``（仅表名）或 ``{"dim_table": "t_dim", "on": "f.id = d.id"}``
+    （JSON 字符串亦可）。无法识别返回 ``None``（调用方按「无 join 路径」处理 → 拒绝注入）。
+    """
     if raw is None:
         return None
     if isinstance(raw, str):
         text = raw.strip()
         if not text:
             return None
-        try:
-            return _parse_join_path(json.loads(text))
-        except json.JSONDecodeError:
-            return JoinPath(dim_table=text, on=None)
+        parsed = loads_or(text, None)
+        if isinstance(parsed, (dict, list)):
+            return _parse_join_path(parsed)
+        return JoinPath(dim_table=text, on=None)
     if isinstance(raw, dict):
         dim = raw.get("dim_table") or raw.get("table") or raw.get("dim")
         if not dim:
@@ -243,13 +249,12 @@ class FieldMappingJoinResolver(JoinPathResolver):
 # AST 工具
 # ═════════════════════════════════════════════════════════════════════
 def _parse_tree(sql: str, stage: str) -> Any:
-    try:
-        return sqlglot.parse_one(sql, dialect="mysql")
-    except Exception as exc:  # noqa: BLE001
-        raise sql_guard_error(f"语法解析失败：{exc}", "SQL_PARSE_ERROR", stage=stage) from exc
+    """解析为单棵 AST（薄封装，保持本模块既有的位置参数调用约定）。"""
+    return parse_one_or_deny(sql, dialect="mysql", stage=stage)
 
 
 def _literal(value: Any) -> Any:
+    """Python 值 → sqlglot 字面量节点（bool 用 1/0，数字用 number，其余用 string）。"""
     if isinstance(value, bool):
         return exp.Literal.number(1 if value else 0)
     if isinstance(value, (int, float)):
@@ -258,58 +263,16 @@ def _literal(value: Any) -> Any:
 
 
 def _literal_value(node: exp.Expression) -> str:
+    """sqlglot 字面量节点 → 字符串（用于值域比对；字符串去掉外层单引号）。"""
     if isinstance(node, exp.Literal):
         return str(node.this)
     return node.sql(dialect="mysql").strip("'")
 
 
 def _in_predicate(table: str, column: str, values: list[Any]) -> Any:
+    """构造 ``t.col IN (v1, v2, ...)`` 谓词节点（table 为空则不加限定）。"""
     col = exp.column(column, table=table) if table else exp.column(column)
     return exp.In(this=col, expressions=[_literal(v) for v in values])
-
-
-def _tables_in(tree: Any) -> set[str]:
-    """SQL 中出现的物理表（**排除 CTE 别名**，否则会把 CTE 名当物理表）。"""
-    cte_names = {c.alias_or_name for c in tree.find_all(exp.CTE)}
-    return {t.name for t in tree.find_all(exp.Table) if t.name and t.name not in cte_names}
-
-
-def _alias_map(tree: Any) -> dict[str, str]:
-    """``别名 / 表名 → 物理表名``（用于把 ``d.region`` 解析到它真正所属的表）。"""
-    mapping: dict[str, str] = {}
-    for table in tree.find_all(exp.Table):
-        if not table.name:
-            continue
-        mapping[table.name] = table.name
-        alias = table.alias
-        if alias:
-            mapping[alias] = table.name
-    return mapping
-
-
-def _column_usage(tree: Any, column: str) -> tuple[bool, set[str]]:
-    """统计名为 ``column`` 的列被如何引用。
-
-    返回 ``(是否存在无限定引用, 被显式限定的所有者物理表集合)``。
-
-    ★ 这是修复 QA-CRITICAL-1/-2 的关键：v1 只问「列名是否在整个 AST 里出现」——
-      当同名权限列出现在**维表**（``d.region``）上时被误判为「该列在主表上」，
-      于是把谓词挂到主表的同名列（不存在 → 误拒；恰好同名 → 越权泄露）。
-      这里按 ``exp.Column.table`` 把引用**解析回它真正所属的表**，才能区分「主表自身列」
-      与「维表权限列」。
-    """
-    aliases = _alias_map(tree)
-    unqualified = False
-    owners: set[str] = set()
-    for col in tree.find_all(exp.Column):
-        if col.name != column:
-            continue
-        qualifier = col.table
-        if not qualifier:
-            unqualified = True
-            continue
-        owners.add(aliases.get(qualifier, qualifier))
-    return unqualified, owners
 
 
 def _scope_target_table(tree: Any, table: str, column: str, path: JoinPath | None) -> str | None:
@@ -498,6 +461,13 @@ class RowScopeInjector:
         self._mapping = mapping
 
     async def check(self, sql: str, ctx: RunContext, scope: ScopePredicate | None) -> GuardResult:
+        """执行「未配置放行 / 空值域拒绝」判定，返回护栏结果。
+
+        语义（★ 与 v1 的关键差异）：
+          * ``scope is None`` → 该用户**未配置**任何行级规则 → 放行且不改写 SQL；
+          * ``scope.is_empty()`` → 有规则但**值域为空**（该用户一行都不该看见）→ 抛
+            ``SQL_SCOPE_EMPTY`` 硬拒，**绝不**因「空」而放行整表。
+        """
         if scope is None:
             return GuardResult(ok=True)  # 未配置任何行级规则 → 不注入（放行）
         if scope.is_empty():
@@ -576,6 +546,13 @@ class RowScopeVerifier:
         self._mapping = mapping
 
     async def check(self, sql: str, ctx: RunContext, scope: ScopePredicate | None) -> GuardResult:
+        """覆盖性断言：每个引用受保护表的 SELECT 都必须带等价 scope 合取项。
+
+        输入：待校验 SQL（通常已是注入后的 SQL）、运行上下文、权限子域。
+        输出：``GuardResult(ok=True)``；缺失条件时抛 ``SQL_SCOPE_NOT_INJECTED``。
+        注意：``scope is None`` 直接放行（与注入器保持一致——未配置即不保护）；
+              值域为空必须 deny（fail-closed）。
+        """
         if scope is None:
             return GuardResult(ok=True)
 

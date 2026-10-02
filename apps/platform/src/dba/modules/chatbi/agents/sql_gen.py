@@ -11,13 +11,14 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from dba_runtime.agent import AgentOutput
 from dba_runtime.context import RunContext
 from dba_runtime.telemetry import traced
+
+from dba.util.jsonx import loads_object
 
 from ..prompts import load_prompt
 
@@ -57,19 +58,16 @@ def parse_sql_payload(text: str) -> tuple[str, list[dict[str, Any]] | None]:
 
     支持两种形态：① **多查询信封** ``{"sql": "...", "queries": [{"ref","sql"}, ...]}``；
     ② 裸 SQL（或 ```sql 围栏）——此时 ``queries`` 为 ``None``，走原有单查询路径。
+
+    输入：模型返回的原始文本（可能夹带 ```json 围栏 / 解释文字）。
+    输出：主查询 SQL + 可选的 ``queries`` 列表（每个元素含 ``ref`` 与 ``sql``）。
+    注意：信封里 ``queries`` 全为空时不当作多查询，退化为「提取单条 SQL」。
     """
     candidate = _strip_fence((text or "").strip())
     if candidate.startswith("{"):
-        obj: Any = None
-        try:
-            obj = json.loads(candidate)
-        except json.JSONDecodeError:
-            start, end = candidate.find("{"), candidate.rfind("}")
-            if start != -1 and end > start:
-                try:
-                    obj = json.loads(candidate[start : end + 1])
-                except json.JSONDecodeError:
-                    obj = None
+        # ★ 统一走 loads_object：内部已实现「整体解析 → 花括号子串」两级降级，
+        #   避免各 Agent 自行重复写 try/except JSONDecodeError。
+        obj = loads_object(candidate)
         if isinstance(obj, dict) and isinstance(obj.get("queries"), list):
             queries = [
                 dict(q) for q in obj["queries"] if isinstance(q, dict) and str(q.get("sql") or "")
