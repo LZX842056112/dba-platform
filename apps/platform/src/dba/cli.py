@@ -3,7 +3,7 @@
 对齐《设计文档 v2》§4.7 / §12.4 与《实现要点清单》§1.2.6.4。
 
 子命令：``migrate`` / ``bootstrap-storage`` / ``seed``（B0 交付骨架与 ``--help``）；
-``reindex`` / ``eval`` 于后续批次接线。
+``reindex`` 于后续批次接线。
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _project_root() -> Path:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="dba-platform 命令行：数据库迁移 / 存储初始化 / 造数 / 评测",
+        description="dba-platform 命令行：数据库迁移 / 存储初始化 / 造数",
     )
     parser.add_argument("--version", action="version", version="dba 0.1.0")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -52,17 +52,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("reindex", help="重建检索索引（Milvus / ES）")
     r.add_argument("--target", default="all", help="milvus | es | all")
-
-    e = sub.add_parser("eval", help="运行评测套件")
-    e.add_argument(
-        "--suite",
-        default="all",
-        choices=["all", "guard", "golden", "bird-mini"],
-        help="all | guard | golden | bird-mini",
-    )
-    e.add_argument("--gate", default=None, help="阈值文件路径（退出码即结论：0/1/2）")
-    e.add_argument("--out", default=None, help="结果 JSON 落盘路径")
-    e.add_argument("--root", default=None, help="workspace 根（默认自动定位）")
 
     return parser
 
@@ -186,30 +175,11 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_eval(args: argparse.Namespace) -> int:
-    """运行评测套件（★ B6 落地：接 ``dba.evals.runner``）。
-
-    退出码语义（§12.4 / U23）：``0`` 全部达标 / ``1`` 有套件未达标 / ``2`` 执行错误。
-    ``--suite guard`` 离线秒级；``--suite golden`` 需真实 MySQL（读 ``DBA_TEST_MYSQL_DSN``）。
-    """
-    from .evals.runner import main as eval_main  # noqa: PLC0415 - 延迟导入，避免拖慢 CLI 冷启
-
-    argv: list[str] = ["--suite", str(args.suite)]
-    if args.gate:
-        argv += ["--gate", str(args.gate)]
-    if getattr(args, "out", None):
-        argv += ["--out", str(args.out)]
-    if getattr(args, "root", None):
-        argv += ["--root", str(args.root)]
-    return eval_main(argv)
-
-
 _DISPATCH = {
     "migrate": cmd_migrate,
     "bootstrap-storage": cmd_bootstrap_storage,
     "seed": cmd_seed,
     "reindex": cmd_reindex,
-    "eval": cmd_eval,
 }
 
 

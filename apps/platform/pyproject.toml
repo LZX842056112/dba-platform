@@ -14,8 +14,7 @@ dependencies = [
   "structlog>=24.4",
   "tenacity>=9.0",
   "apscheduler>=3.10",
-  "PyYAML>=6.0",              # 评测门槛文件 evals/thresholds.yaml
-  "opentelemetry-api>=1.28",  # 由 dba-runtime 传递，显式声明以便 mypy 解析
+  "opentelemetry-api>=1.28",  # 由 dba-runtime 传递，显式声明以便类型解析
   "opentelemetry-sdk>=1.28",
   "opentelemetry-exporter-otlp>=1.28",
 ]
