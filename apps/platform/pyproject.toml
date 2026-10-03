@@ -21,7 +21,9 @@ dependencies = [
 
 # 存储驱动做成可选 extras：本地开发不必拉起全部组件
 [project.optional-dependencies]
-mysql  = ["sqlalchemy[asyncio]>=2.0", "asyncmy>=0.2", "alembic>=1.14"]
+# ★ asyncmy 需要 cryptography 才能对 MySQL 8 做 caching_sha2_password 认证；
+#   此前它只是被移除的 dev 依赖（pymysql ← testcontainers）顺带带进来的，必须显式声明。
+mysql  = ["sqlalchemy[asyncio]>=2.0", "asyncmy>=0.2", "cryptography>=43", "alembic>=1.14"]
 mongo  = ["motor>=3.6"]
 milvus = ["pymilvus>=2.4"]
 # ★ ES 客户端主版本必须与服务器主版本一致：VM 上 Elasticsearch 为 8.11.3，
