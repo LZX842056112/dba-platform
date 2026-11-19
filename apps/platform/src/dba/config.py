@@ -14,6 +14,7 @@ import os
 from functools import lru_cache
 from typing import Any, Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: ★ 外部组件所在虚拟机。MySQL / MongoDB / Redis / Milvus / Elasticsearch / MinIO /
@@ -37,18 +38,18 @@ class Settings(BaseSettings):
 
     # ── 存储（★ 外部组件已迁到虚拟机 _VM_HOST:192.168.200.10）─────────
     # 账号/密码与 deploy/vm-provision.sh 顶部变量保持一致，便于对照修改。
-    mysql_dsn: str = f"mysql+asyncmy://dba_user:dba_user_pwd_2026@{_VM_HOST}:3306/dba"
-    mysql_ro_dsn: str = f"mysql+asyncmy://dba_readonly:dba_readonly_pwd_2026@{_VM_HOST}:3306/dba"
+    mysql_dsn: str = f"mysql+asyncmy://dba_user:CHANGE_ME@{_VM_HOST}:3306/dba"
+    mysql_ro_dsn: str = f"mysql+asyncmy://dba_readonly:CHANGE_ME@{_VM_HOST}:3306/dba"
     mongo_dsn: str = f"mongodb://{_VM_HOST}:27017"
     mongo_db: str = "dba"
-    redis_dsn: str = f"redis://:960802@{_VM_HOST}:6379/0"
+    redis_dsn: str = f"redis://:CHANGE_ME@{_VM_HOST}:6379/0"
     milvus_host: str = _VM_HOST
     milvus_port: int = 19530
     es_url: str = f"http://{_VM_HOST}:9200"
     es_index_prefix: str = "dba"
     minio_endpoint: str = f"{_VM_HOST}:9000"
     minio_access_key: str = "minioadmin"
-    minio_secret_key: str = "minioadmin"
+    minio_secret_key: str = "CHANGE_ME"
     minio_secure: bool = False
 
     # ── 向量化服务（★ 本地 bge-m3，由 deploy/embedding_server.py 提供）──
@@ -76,10 +77,12 @@ class Settings(BaseSettings):
     outbox_max_attempts: int = 5
 
     # ── 安全 ────────────────────────────────────────────────
-    jwt_secret: str = "change-me-in-prod"
+    jwt_secret: str = "CHANGE_ME"
     jwt_alg: str = "HS256"
     access_token_ttl_s: int = 3600
     refresh_token_ttl_s: int = 1209600
+    #: Agent 上报 token（X-Agent-Token）。为空时上报接口拒绝请求。
+    agent_token: str = ""
 
     # ── 预算守卫护栏（§6.5）──────────────────────────────────
     guardrail_enabled: bool = True
@@ -146,6 +149,25 @@ class Settings(BaseSettings):
             "kill_switch": self.guardrail_kill_switch,
             "degrade_policy": self.guardrail_degrade_policy,
         }
+
+    @model_validator(mode="after")
+    def _validate_prod_secrets(self) -> "Settings":
+        """生产环境拒绝占位口令，避免默认凭据上线。"""
+        if self.env != "prod":
+            return self
+        required = {
+            "DBA_MYSQL_DSN": self.mysql_dsn,
+            "DBA_MYSQL_RO_DSN": self.mysql_ro_dsn,
+            "DBA_REDIS_DSN": self.redis_dsn,
+            "DBA_JWT_SECRET": self.jwt_secret,
+        }
+        missing = [
+            name for name, value in required.items()
+            if not value or "CHANGE_ME" in value
+        ]
+        if missing:
+            raise ValueError("生产环境必须配置: " + ", ".join(missing))
+        return self
 
     def ready_components(self) -> dict[str, tuple[str, int]]:
         """``/ready`` 探测目标：组件名 → (host, port)。

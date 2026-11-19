@@ -16,8 +16,16 @@ from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
-from dba.api.deps import Principal, get_container, get_current_principal
+from dba.api.agent_auth import verify_agent_token
+from dba.api.deps import (
+    AuthError,
+    Principal,
+    get_container,
+    get_current_principal,
+    get_settings,
+)
 from dba.api.v1._common import parse_window, read_run_doc, service_or_default, storage_or_default
+from dba.config import Settings
 from dba.di import Container
 
 __all__ = ["router"]
@@ -30,14 +38,14 @@ _AGENT_TOKEN_HEADER = APIKeyHeader(name="X-Agent-Token", scheme_name="AgentToken
 
 
 def _require_agent_token(
+    settings: Annotated[Settings, Depends(get_settings)],
     x_agent_token: Annotated[str | None, Security(_AGENT_TOKEN_HEADER)] = None,
 ) -> str:
     """Agent 上报类接口鉴权（``X-Agent-Token``）。"""
-    if not x_agent_token:
-        from dba.api.deps import AuthError  # noqa: PLC0415
-
-        raise AuthError("缺少 X-Agent-Token")
-    return x_agent_token
+    try:
+        return verify_agent_token(x_agent_token, settings.agent_token)
+    except ValueError as exc:
+        raise AuthError(str(exc)) from exc
 
 
 @router.get("/overview")

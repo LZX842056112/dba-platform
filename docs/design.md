@@ -386,7 +386,7 @@ sequenceDiagram
 
 | 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
-| POST | `/stream/ticket` | JWT | 签发订阅票据（60s） |
+| POST | `/stream/ticket` | JWT | 兼容别名，已弃用；请用 `/chat/stream-ticket` |
 | GET | `/stream/runs/{trace_id}?ticket=` | TICKET | SSE 订阅 Run 事件 |
 
 ### 8.3 运维端点（3 个，非 `/api/v1`）
@@ -542,10 +542,10 @@ cd frontend && npm install && npm run dev
 | 项 | 风险 | 现状 |
 |---|---|---|
 | 分层红线失去静态强制 | L3 模块间越界依赖可能被合入 | ruff `banned-api` 与 mypy 配置已随构建精简移除，约定退化为评审 |
-| 前端 `lib/` 被误忽略 | `frontend/src/lib/*.ts` 是业务代码，但被根 `.gitignore` 的 `lib/` 规则忽略，可能漏提交 | 代码完好，提交时需显式 `git add -f` 或修正忽略规则 |
+| 前端 `lib/` 忽略规则 | 根 `.gitignore` 的 `lib/` 规则已改为 `/lib/` | `frontend/src/lib/*.ts` 需提交后纳入版本控制 |
 | 跨副本取消失效 | 多副本下取消 Run 只在处理该 Run 的副本生效 | 取消令牌为进程内字典；需 Redis 广播才能跨副本 |
 | 限流降级 | 无 Redis 时 `rate_limiter` / `idempotency` 置空，限流与幂等失效 | 单实例部署可接受，多副本需 Redis |
-| Agent 上报鉴权弱 | `X-Agent-Token` 只校验非空 | 缺少签名/白名单校验 |
+| Agent 上报鉴权 | 已改为匹配 `DBA_AGENT_TOKEN`，常量时间比较 | 仍无签名与密钥轮换机制 |
 | ES 严格映射 | `dynamic: strict` 下新增字段写入失败 | 失败会落 DLQ，不丢数据但需人工重放 |
 | 密码存储 | 兼容明文 / `sha256` | 仅演示可用，生产必须替换 |
 | `run.error_code` 缺失 | 失败 Run 的 `error_code` 可能为空 | 需从 span / `sql_audit` 定位失败原因 |

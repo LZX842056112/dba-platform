@@ -71,6 +71,7 @@ uv run uvicorn dba.main:app --port 8000      # 启动后端
 
 ```bash
 cd frontend && npm install && npm run dev    # Vite dev server（默认 5173）
+npm run gen:api                              # 后端运行后重新生成 src/types/api.d.ts
 ```
 
 若本机没有 `uv`，可改用虚拟环境直连：`.venv/Scripts/python.exe -m dba.cli <子命令>`、
@@ -180,6 +181,7 @@ worker 常驻进程（`dba-worker`）注册 8 个周期任务：`rollup`(02:00) 
 | `DBA_GUARDRAIL_ALLOW_CIRCUIT_BREAK` | false | 硬熔断开关（唯一会中断业务的动作） |
 | `DBA_GUARDRAIL_DEGRADE_POLICY` | fail_open_mysql | Redis 不可用时走 MySQL 行锁兜底 |
 | `DBA_RUN_DEADLINE_S` | 180 | 单次 Run 墙钟预算 |
+| `DBA_AGENT_TOKEN` | 空 | Agent 上报 token；为空时上报接口拒绝请求 |
 
 ### 接真实模型
 
@@ -220,12 +222,12 @@ DBA_LLM_MODEL_ECONOMY=deepseek-chat
 
 ## 已知限制
 
-- **无测试与静态检查工具链**：`tests/`、`evals/`、ruff/mypy/pytest/vitest 已从仓库移除，当前仅前端保留 `npm run lint`（`tsc --noEmit`）与 `npm run build`。
+- **测试覆盖有限**：已恢复 `tests/unit`（配置 / ticket / Agent token）和 CI；业务链路测试仍待补，前端保留 `npm run lint` 与 `npm run build`。
 - **IM 播报未接真网关**：`BroadcastAgent` 默认注入 `LogBroadcastGateway`（只落结构化日志）。
 - **复用率曲线数据源为空态**：`skill_usage` 尚无生产写入方，曲线通常返回空。
 - **取消 Run 仅在单副本生效**：取消令牌为进程内结构，跨副本需 Redis 广播。
-- **`frontend/src/lib/*.ts` 未被版本控制**：被根 `.gitignore` 的 `lib/` 规则误忽略，新克隆需注意前端构建。
-- **Agent 上报鉴权较弱**：`X-Agent-Token` 仅校验非空。
+- **`frontend/src/lib/*.ts` 已解除忽略**：提交后纳入版本控制，新克隆才可构建前端。
+- **Agent 上报需要 token**：`X-Agent-Token` 必须匹配 `DBA_AGENT_TOKEN`；未配置时接口 fail-closed。
 
 ---
 
