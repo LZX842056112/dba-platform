@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
+from dba.api.stream_tickets import issue_ticket_response
 from dba.api.v1._common import read_run_doc
 from dba.di import Container
 from dba.util.time import utcnow_naive as _now
@@ -239,14 +240,13 @@ async def stream_ticket(
     trace_id = str(payload.get("trace_id") or "")
     if not trace_id:
         return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 trace_id"})
-    tickets = container.get("stream_tickets")
-    ticket = tickets.issue(
+    return issue_ticket_response(
+        container.get("stream_tickets"),
         trace_id=trace_id,
         user_id=principal.user_id,
         since=_now() - timedelta(days=1),
         until=_now() + timedelta(days=1),
     )
-    return {"stream_ticket": ticket.ticket, "expires_in": 60}
 
 
 @router.post("/sessions/{session_id}/query/cancel")

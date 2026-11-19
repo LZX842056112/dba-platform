@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal
+from dba.api.stream_tickets import issue_ticket_response
 from dba.di import Container
 
 __all__ = ["router", "build_sse_frames"]
@@ -65,22 +66,26 @@ def build_sse_frames(events: list[Any]) -> list[str]:
     return frames
 
 
-@router.post("/ticket", response_model=None)
+@router.post("/ticket", response_model=None, deprecated=True)
 async def issue_ticket(
     payload: dict[str, Any],
     principal: Annotated[Principal, Depends(get_current_principal)],
     container: Annotated[Container, Depends(get_container)],
 ) -> dict[str, Any] | JSONResponse:
-    """``POST /stream/ticket``：签发订阅票据（★ P0-7）。"""
+    """``POST /stream/ticket``：兼容别名，建议改用 ``/chat/stream-ticket``。"""
     trace_id = str(payload.get("trace_id") or "")
     if not trace_id:
         return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 trace_id"})
     now = datetime.now(UTC).replace(tzinfo=None)
     since = _parse_time(payload.get("since")) or (now - timedelta(days=1))
     until = _parse_time(payload.get("until")) or (now + timedelta(days=1))
-    tickets = container.get("stream_tickets")
-    ticket = tickets.issue(trace_id=trace_id, user_id=principal.user_id, since=since, until=until)
-    return {"stream_ticket": ticket.ticket, "expires_in": 60}
+    return issue_ticket_response(
+        container.get("stream_tickets"),
+        trace_id=trace_id,
+        user_id=principal.user_id,
+        since=since,
+        until=until,
+    )
 
 
 @router.get("/runs/{trace_id}")

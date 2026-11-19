@@ -22,7 +22,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-__all__ = ["StreamTicket", "StreamTicketStore"]
+__all__ = ["StreamTicket", "StreamTicketStore", "issue_ticket_response"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,3 +94,21 @@ class StreamTicketStore:
         stale = [key for key, rec in self._tickets.items() if rec.is_expired(now)]
         for key in stale:
             self._tickets.pop(key, None)
+
+
+def issue_ticket_response(
+    store: StreamTicketStore,
+    *,
+    trace_id: str,
+    user_id: int | None,
+    since: datetime,
+    until: datetime,
+) -> dict[str, object]:
+    """签发 ticket 并返回统一响应体。"""
+    ticket = store.issue(
+        trace_id=trace_id,
+        user_id=user_id,
+        since=since,
+        until=until,
+    )
+    return {"stream_ticket": ticket.ticket, "expires_in": 60}
