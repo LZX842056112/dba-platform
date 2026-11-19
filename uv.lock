@@ -737,7 +737,6 @@ name = "dba"
 version = "0.1.0"
 source = { editable = "apps/platform" }
 dependencies = [
-    { name = "apscheduler" },
     { name = "dba-runtime" },
     { name = "fastapi" },
     { name = "opentelemetry-api" },
@@ -804,7 +803,6 @@ redis = [
 requires-dist = [
     { name = "alembic", marker = "extra == 'mysql'", specifier = ">=1.14" },
     { name = "anthropic", marker = "extra == 'llm'", specifier = ">=0.39" },
-    { name = "apscheduler", specifier = ">=3.10" },
     { name = "asyncmy", marker = "extra == 'mysql'", specifier = ">=0.2" },
     { name = "cryptography", marker = "extra == 'mysql'", specifier = ">=43" },
     { name = "dba", extras = ["mysql", "mongo", "milvus", "es", "minio", "redis", "llm", "embedding-local"], marker = "extra == 'prod'", editable = "apps/platform" },
