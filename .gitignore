@@ -15,8 +15,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -171,3 +171,6 @@ node_modules/
 
 # 浏览器 e2e 产物（截图/日志，不入库）
 tests/e2e/browser/artifacts/
+
+# 本地 PDF 构建工作区（输出与大体积依赖）
+docs/.pdfbuild/
