@@ -17,16 +17,6 @@ export function dataSourceToRows(source: DataSource | undefined): RowRecord[] {
   });
 }
 
-/** 解析面板行数据：按 `panel.dataset.ref` 从数据源字典取行。 */
-export function resolvePanelRows(
-  panel: PanelSpec,
-  dataSources: Record<string, DataSource>,
-): RowRecord[] {
-  const ref = panel.dataset?.ref;
-  if (!ref) return [];
-  return dataSourceToRows(dataSources[ref]);
-}
-
 /** 数据源是否为「大结果未内联」（需前端走预签名 URL 直拉，§9.5 硬约定 2）。 */
 export function isExternalSource(panel: PanelSpec, dataSources: Record<string, DataSource>): boolean {
   const ref = panel.dataset?.ref;

@@ -1,6 +1,9 @@
 // 面板渲染器：按 `panel.kind` 分派（chart | metric_card | table | text | ranking）。
+//
+// ★ s3 数据源（大结果未内联，§9.5 硬约定 2）走 `external` 分支：最小集不做前端直拉，
+//   但必须明确告知原因并给出可打开的预签名 URL，不能退化成一句「暂无数据」。
 
-import type { ReactElement } from 'react';
+import { memo, type ReactElement } from 'react';
 import type { PanelSpec, RowRecord } from '../../../types/dashboard';
 import { ChartPanel } from './ChartPanel';
 import { DataTable } from './DataTable';
@@ -12,10 +15,36 @@ import { TextPanel } from './TextPanel';
 interface Props {
   panel: PanelSpec;
   rows: RowRecord[];
+  /** 数据源为 s3（结果未内联）。 */
+  external?: boolean;
+  /** s3 数据源的预签名直拉地址（可能为空）。 */
+  externalUrl?: string;
 }
 
-export function PanelRenderer({ panel, rows }: Props) {
+export const PanelRenderer = memo(function PanelRenderer({
+  panel,
+  rows,
+  external,
+  externalUrl,
+}: Props) {
   const body = ((): ReactElement => {
+    if (external) {
+      return (
+        <div className="dim" style={{ fontSize: 12, lineHeight: 1.6 }}>
+          该面板结果未内联（data_source.mode = s3）。
+          {externalUrl ? (
+            <>
+              {' '}
+              <a href={externalUrl} target="_blank" rel="noreferrer">
+                打开结果文件（预签名 URL）
+              </a>
+            </>
+          ) : (
+            ' 未提供预签名 URL，前端直拉未实现。'
+          )}
+        </div>
+      );
+    }
     switch (panel.kind) {
       case 'chart':
         return <ChartPanel panel={panel} rows={rows} />;
@@ -48,4 +77,4 @@ export function PanelRenderer({ panel, rows }: Props) {
       <PanelErrorBoundary panelId={panel.panel_id}>{body}</PanelErrorBoundary>
     </div>
   );
-}
+});

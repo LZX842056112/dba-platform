@@ -114,6 +114,8 @@ export interface RunStore extends RunState {
   apply: (event: EventEnvelope) => void;
   /** 回拉整份大屏 JSON（§9.5）后合并 data_sources / layout / panels。 */
   hydrateDashboard: (spec: Partial<DashboardSpec> | null | undefined) => void;
+  /** 设置顶部横幅（结构校验失败等需要用户可见的异常）。 */
+  setBanner: (banner: RunState['banner']) => void;
   reset: () => void;
   markReplayGap: (gap: Omit<ReplayGap, 'recovered'>) => void;
   recoverReplayGap: (spanCount: number, assistantMessage?: string) => void;
@@ -123,6 +125,8 @@ export const useRunStore = create<RunStore>((set, get) => ({
   ...initialRunState,
 
   reset: () => set(() => ({ ...initialRunState })),
+
+  setBanner: (banner) => set(() => ({ banner })),
 
   markReplayGap: (gap) =>
     set(() => ({
@@ -365,8 +369,3 @@ export const useRunStore = create<RunStore>((set, get) => ({
     }
   },
 }));
-
-/** 已到达面板的有序列表（供渲染器消费）。 */
-export function orderedPanels(state: RunState): PanelSpec[] {
-  return state.panelOrder.map((id) => state.panels[id]).filter((p): p is PanelSpec => Boolean(p));
-}

@@ -39,20 +39,6 @@ export function pieOption(items: Array<{ name: string; value: number }>): EChart
   };
 }
 
-export function barOption(
-  xs: string[],
-  series: Array<{ name: string; data: number[] }>,
-): EChartsCoreOption {
-  return {
-    tooltip: { trigger: 'axis' },
-    legend: series.length > 1 ? { top: 0 } : undefined,
-    grid: { left: 8, right: 16, top: series.length > 1 ? 32 : 16, bottom: 8, containLabel: true },
-    xAxis: { type: 'category', data: xs },
-    yAxis: { type: 'value' },
-    series: series.map((s) => ({ name: s.name, type: 'bar', data: s.data })),
-  };
-}
-
 export function gaugeOption(value: number, max: number, unit = ''): EChartsCoreOption {
   return {
     series: [
