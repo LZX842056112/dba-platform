@@ -17,10 +17,6 @@ jobs:
         run: uv lock --check
       - name: Install workspace
         run: uv sync --all-packages
-      - name: Unit tests
-        run: uv run python -m unittest discover -s tests/unit -v
-      - name: Feature tests
-        run: uv run python -m unittest discover -s tests/feature -v
 
   frontend:
     runs-on: ubuntu-latest

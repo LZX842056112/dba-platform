@@ -37,21 +37,6 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
 # Translations
 *.mo
 *.pot
@@ -168,9 +153,3 @@ cython_debug/
 
 # 前端依赖（frontend/.gitignore 已含，此处兜底）
 node_modules/
-
-# 浏览器 e2e 产物（截图/日志，不入库）
-tests/e2e/browser/artifacts/
-
-# 本地 PDF 构建工作区（输出与大体积依赖）
-docs/.pdfbuild/
