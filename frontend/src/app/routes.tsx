@@ -1,5 +1,6 @@
-// 路由表：登录 + 对话页 + 观测 5 页 + FinOps 4 页。
+// 路由表：登录 + 对话页 + 观测 4 页 + FinOps 4 页。
 // ★ 除登录页外全部路由级懒加载（React.lazy + Suspense），按需拆包。
+// ★ /observability 是分区根路径，重定向到分区默认页「流程监控」。
 
 import { lazy, Suspense } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
@@ -9,9 +10,6 @@ import { RouteErrorBoundary } from './RouteErrorBoundary';
 
 const ChatSessionPage = lazy(() =>
   import('../pages/chatbi/ChatSessionPage').then((m) => ({ default: m.ChatSessionPage })),
-);
-const OverviewPage = lazy(() =>
-  import('../pages/observability/OverviewPage').then((m) => ({ default: m.OverviewPage })),
 );
 const TopologyPage = lazy(() =>
   import('../pages/observability/TopologyPage').then((m) => ({ default: m.TopologyPage })),
@@ -24,6 +22,9 @@ const RunDetailPage = lazy(() =>
 );
 const AnomaliesPage = lazy(() =>
   import('../pages/observability/AnomaliesPage').then((m) => ({ default: m.AnomaliesPage })),
+);
+const FlowMonitorPage = lazy(() =>
+  import('../pages/observability/FlowMonitorPage').then((m) => ({ default: m.FlowMonitorPage })),
 );
 const CostOverviewPage = lazy(() =>
   import('../pages/finops/CostOverviewPage').then((m) => ({ default: m.CostOverviewPage })),
@@ -51,7 +52,8 @@ export function AppRoutes() {
           <Route path="/login" element={<LoginPage />} />
           <Route element={<RequireAuth><Outlet /></RequireAuth>}>
             <Route path="/" element={<ChatSessionPage />} />
-            <Route path="/observability" element={<OverviewPage />} />
+            <Route path="/observability" element={<Navigate to="/observability/flow" replace />} />
+            <Route path="/observability/flow" element={<FlowMonitorPage />} />
             <Route path="/observability/topology" element={<TopologyPage />} />
             <Route path="/observability/runs" element={<RunsPage />} />
             <Route path="/observability/runs/:traceId" element={<RunDetailPage />} />

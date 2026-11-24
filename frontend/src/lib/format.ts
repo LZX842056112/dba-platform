@@ -2,6 +2,9 @@
 
 const MICRO = 1_000_000;
 
+/** 千分位格式器只构造一次：表格里每行都会调用 formatNumber。 */
+const NUMBER_FORMAT = new Intl.NumberFormat('zh-CN');
+
 /** 微美元 → 展示字符串（保留到分，必要时按需扩展）。 */
 export function formatMicroUsd(micro: number | null | undefined): string {
   if (micro === null || micro === undefined) return '—';
@@ -21,13 +24,13 @@ export function formatMs(ms: number | null | undefined): string {
 /** 数值 → 千分位展示。 */
 export function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
-  return new Intl.NumberFormat('zh-CN').format(value);
+  return NUMBER_FORMAT.format(value);
 }
 
 /** ISO / 毫秒时间戳 → 本地时间展示。 */
 export function formatTime(input: string | number | null | undefined): string {
   if (input === null || input === undefined) return '—';
-  const date = typeof input === 'number' ? new Date(input) : new Date(input);
+  const date = new Date(input);
   if (Number.isNaN(date.getTime())) return String(input);
   return date.toLocaleString('zh-CN');
 }

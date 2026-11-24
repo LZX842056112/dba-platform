@@ -37,6 +37,22 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.reporting-window {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+}
+
+.reporting-window select {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+}
+
 code,
 pre {
   font-family: var(--font-mono);
@@ -56,6 +72,48 @@ pre {
   padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
+}
+
+/* 顶部导航：全局外壳元素，样式必须放在全局表里（曾误放 cockpit.css，
+ * 导致观测/FinOps 页导航无内边距与高亮）。 */
+.nav-link {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  font-size: 13px;
+}
+
+.nav-link--active {
+  color: #7ef0ff;
+  background: rgba(34, 211, 238, 0.12);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+}
+
+/* 分区二级页签（目前用于「观测」）：与一级导航同一视觉语言，靠下划线区分层级。 */
+.section-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.section-tab {
+  padding: 6px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-dim);
+  font-size: 13px;
+}
+
+.section-tab:hover {
+  color: var(--color-text);
+}
+
+.section-tab--active {
+  color: #7ef0ff;
+  border-bottom-color: rgba(34, 211, 238, 0.8);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
 }
 
 .app-main {
@@ -117,6 +175,11 @@ pre {
 .badge--warn {
   color: var(--color-warning);
   border-color: var(--color-warning);
+}
+
+.badge--info {
+  color: var(--color-info);
+  border-color: var(--color-info);
 }
 
 .sql-collapse {
@@ -197,6 +260,20 @@ table.data-table td {
   border-bottom: 1px solid var(--color-border);
   padding: 4px 8px;
   text-align: left;
+}
+
+/* 数值列右对齐 + 等宽数字：时延、成本、计数在多行间不跳动 */
+table.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 编码列（trace_id / span_id） */
+.mono-short {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #9fe8f6;
 }
 
 .step-list {

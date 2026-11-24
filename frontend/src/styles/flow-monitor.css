@@ -1,0 +1,659 @@
+/* 流程监控大屏（/observability/flow）。
+ *
+ * 设计约束：纯 CSS（无 UI 框架），视觉语言与 cockpit.css 一致（深色 + 霓虹）。
+ * 布局：三栏网格 —— 左「模块工位」、中「流水线 / KPI / 成本趋势」、右「实时运行流」。
+ */
+
+.fm-page {
+  display: flex;
+  flex-direction: column;
+  /* 外壳高度：一级顶栏 47px + 观测分区页签 34px + .app-main 上下内边距 32px = 113px，
+     再留 3px 余量，避免这 1~2px 触发 .app-main 的页级滚动条。
+     不用 height:100%：.app-main 是 overflow:auto 的 flex 项，百分比会退化成 auto。 */
+  height: calc(100vh - 116px);
+  min-height: 560px;
+}
+
+.fm-stack {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── 顶部报错条 ───────────────────────────────────────────── */
+.fm-alert {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-left: 3px solid var(--color-danger);
+  background: rgba(239, 83, 80, 0.12);
+  color: #ffb4b2;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── 头部控件 ─────────────────────────────────────────────── */
+.fm-head__right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fm-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #7ef0ff;
+  font-family: var(--font-mono);
+}
+
+.fm-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--neon-cyan);
+  box-shadow: 0 0 8px var(--neon-cyan);
+  animation: fm-pulse 1.6s ease-in-out infinite;
+}
+
+.fm-select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-text);
+  background: rgba(27, 35, 64, 0.9);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+}
+
+@keyframes fm-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fm-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+/* ── 主网格 ───────────────────────────────────────────────── */
+.fm-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 236px minmax(0, 1fr) 318px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    'rail flow feed'
+    'rail kpi feed'
+    'rail trend feed';
+}
+
+.fm-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 10px;
+}
+
+.fm-panel__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.fm-panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.fm-panel__hint {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-empty {
+  flex: 1;
+  min-height: 56px;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  color: var(--color-text-dim);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── 左栏：模块工位 + Top Agent ───────────────────────────── */
+.fm-rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.fm-rail__list {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fm-rail__sep {
+  flex: 0 0 auto;
+  height: 1px;
+  background: var(--color-border);
+  margin: 2px 0;
+}
+
+.fm-station {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(20, 26, 46, 0.7);
+  border: 1px solid var(--color-border);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.fm-station:hover {
+  border-color: rgba(34, 211, 238, 0.45);
+}
+
+.fm-station[data-active='true'] {
+  border-color: rgba(34, 211, 238, 0.75);
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.14), rgba(20, 26, 46, 0.7));
+  box-shadow: inset 0 0 18px rgba(34, 211, 238, 0.08);
+}
+
+.fm-station__top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fm-station__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5a6488;
+}
+
+.fm-station__dot[data-tone='run'] {
+  background: var(--color-info);
+  box-shadow: 0 0 8px var(--color-info);
+  animation: fm-pulse 1.6s ease-in-out infinite;
+}
+
+.fm-station__dot[data-tone='err'] {
+  background: var(--color-danger);
+  box-shadow: 0 0 8px var(--color-danger);
+}
+
+.fm-station__dot[data-tone='ok'] {
+  background: var(--color-success);
+}
+
+.fm-station__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm-station__value {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #7ef0ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-station__sub {
+  font-size: 10.5px;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-station__bar {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(42, 51, 85, 0.7);
+  overflow: hidden;
+}
+
+.fm-station__bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(79, 140, 255, 0.85), var(--neon-cyan));
+  transition: width 0.5s ease-out;
+}
+
+.fm-chip {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-dim);
+  cursor: pointer;
+}
+
+.fm-chip[data-on='true'] {
+  color: #7ef0ff;
+  border-color: rgba(34, 211, 238, 0.6);
+  background: rgba(34, 211, 238, 0.12);
+}
+
+/* Top Agent 排行：名称与数值同行、进度条独占下一行（236px 栏宽下不截断 Agent 名） */
+.fm-rank {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-areas:
+    'no name value'
+    'bar bar bar';
+  align-items: center;
+  gap: 3px 6px;
+  font-size: 12px;
+}
+
+.fm-rank .rank-no {
+  grid-area: no;
+}
+
+.fm-rank .rank-bar {
+  grid-area: bar;
+}
+
+.fm-rank__name {
+  grid-area: name;
+  min-width: 0;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-rank__value {
+  grid-area: value;
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 左栏底部口径说明 */
+.fm-note {
+  flex: 0 0 auto;
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--color-text-dim);
+}
+
+/* ── 中上：七步流水线 ─────────────────────────────────────── */
+.fm-flow-panel {
+  grid-area: flow;
+}
+
+.fm-flow {
+  display: flex;
+  align-items: flex-start;
+}
+
+.fm-flow__link {
+  position: relative;
+  flex: 0 0 16px;
+  height: 1px;
+  margin-top: 19px;
+  background: rgba(42, 51, 85, 0.9);
+  overflow: hidden;
+}
+
+.fm-flow__link::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+  animation: fm-scan 2.6s linear infinite;
+}
+
+.fm-node {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.fm-node__ring {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: #9fe8f6;
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  background: radial-gradient(circle at 50% 40%, rgba(34, 211, 238, 0.25), rgba(11, 16, 32, 0.6));
+  box-shadow:
+    0 0 12px rgba(34, 211, 238, 0.18),
+    inset 0 0 10px rgba(34, 211, 238, 0.12);
+}
+
+.fm-node[data-state='idle'] .fm-node__ring {
+  color: var(--color-text-dim);
+  border-color: rgba(42, 51, 85, 0.9);
+  background: rgba(20, 26, 46, 0.8);
+  box-shadow: none;
+}
+
+.fm-node[data-state='err'] .fm-node__ring {
+  color: #ffb4b2;
+  border-color: rgba(239, 83, 80, 0.75);
+  background: radial-gradient(circle at 50% 40%, rgba(239, 83, 80, 0.22), rgba(11, 16, 32, 0.6));
+  box-shadow: 0 0 12px rgba(239, 83, 80, 0.25);
+}
+
+/* 错误 span 角标：数量单独标，不改变环色 */
+.fm-node__err {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: rgba(239, 83, 80, 0.92);
+  box-shadow: 0 0 8px rgba(239, 83, 80, 0.45);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.fm-node__label {
+  max-width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--color-text);
+}
+
+.fm-node__meta {
+  max-width: 100%;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 中中：KPI 卡 ─────────────────────────────────────────── */
+.fm-kpi {
+  grid-area: kpi;
+  min-height: 88px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fm-kpi__card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(20, 26, 46, 0.92), rgba(11, 16, 32, 0.86));
+  overflow: hidden;
+}
+
+.fm-kpi__card--hero {
+  border-color: rgba(34, 211, 238, 0.45);
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.1), rgba(11, 16, 32, 0.86));
+}
+
+.fm-kpi__label {
+  font-size: 11px;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-kpi__value {
+  font-family: var(--font-mono);
+  font-size: clamp(17px, 1.6vw, 25px);
+  line-height: 1.2;
+  color: #7ef0ff;
+  text-shadow: 0 0 12px rgba(34, 211, 238, 0.5);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-kpi__unit {
+  margin-left: 3px;
+  font-size: 11px;
+  color: var(--color-text-dim);
+  text-shadow: none;
+}
+
+.fm-kpi__card--danger .fm-kpi__value {
+  color: #ff9a97;
+  text-shadow: 0 0 12px rgba(239, 83, 80, 0.5);
+}
+
+/* ── 中下：成本趋势 ───────────────────────────────────────── */
+.fm-trend {
+  grid-area: trend;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+}
+
+.fm-chart {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 右栏：实时运行流 ─────────────────────────────────────── */
+.fm-feed {
+  grid-area: feed;
+  display: flex;
+  flex-direction: column;
+}
+
+.fm-feed__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fm-feed__row {
+  display: grid;
+  grid-template-columns: 52px 42px minmax(0, 1fr) 56px 38px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-feed__row:hover {
+  background: rgba(34, 211, 238, 0.07);
+}
+
+.fm-feed__row[data-tone='run'] {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.12), transparent);
+}
+
+.fm-feed__time {
+  font-family: var(--font-mono);
+  color: var(--color-text-dim);
+}
+
+.fm-feed__trace {
+  font-family: var(--font-mono);
+  color: #9fe8f6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-feed__trace a {
+  color: inherit;
+}
+
+.fm-feed__trace a:hover {
+  color: #d6fbff;
+  text-decoration: underline;
+}
+
+.fm-feed__mod {
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-feed__lat {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  text-align: right;
+}
+
+.fm-tag {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid;
+  font-size: 11px;
+  line-height: 15px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.fm-tag[data-tone='run'] {
+  color: #7cc7ff;
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.fm-tag[data-tone='ok'] {
+  color: #7fe0ab;
+  border-color: rgba(47, 191, 113, 0.55);
+  background: rgba(47, 191, 113, 0.1);
+}
+
+.fm-tag[data-tone='err'] {
+  color: #ff9a97;
+  border-color: rgba(239, 83, 80, 0.6);
+  background: rgba(239, 83, 80, 0.12);
+}
+
+.fm-tag[data-tone='warn'] {
+  color: #ffd08a;
+  border-color: rgba(242, 178, 48, 0.55);
+  background: rgba(242, 178, 48, 0.1);
+}
+
+/* ── 窄屏塌陷：单列纵向堆叠 ───────────────────────────────── */
+@media (max-width: 1040px) {
+  .fm-page {
+    height: auto;
+    min-height: 0;
+  }
+
+  .fm-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas: none;
+  }
+
+  /* ★ 必须同时复位 grid-area：命名区域消失后，`grid-area: rail` 会被当成
+     不存在的命名线，把面板推到隐式轨道（表现为只剩右栏、其余面板错位）。 */
+  .fm-rail,
+  .fm-flow-panel,
+  .fm-kpi,
+  .fm-trend,
+  .fm-feed {
+    grid-area: auto;
+  }
+
+  .fm-rail {
+    min-height: 320px;
+  }
+
+  .fm-kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fm-trend {
+    min-height: 200px;
+  }
+
+  .fm-feed {
+    min-height: 320px;
+  }
+}
