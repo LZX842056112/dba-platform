@@ -92,7 +92,7 @@ intent → schema_link → sql_gen → sql_guard → sql_exec → visual → nar
 ```bash
 dba migrate [--revision head] [--dry-run]        # Alembic 升级 MySQL（幂等）
 dba bootstrap-storage [--only milvus|es|minio]   # 建 Milvus collection / ES index / MinIO bucket
-dba seed [--demo]                                # 灌入口径、技能模板、价格表、预算、演示数据
+dba seed                                         # 角色 / 价格表 / 预算 + 首个管理员（需配置环境变量）
 dba reindex [--target all|milvus|es]             # 重建检索索引
 ```
 
@@ -131,9 +131,18 @@ uv sync --all-packages --extra prod   # 安装（含全部存储驱动）
 cp .env.example .env                  # 按需覆盖为真实凭据
 uv run dba migrate                    # 建表 / 升级（幂等）
 uv run dba bootstrap-storage          # 建 Milvus / ES / MinIO 资源
-uv run dba seed --demo                # 灌入口径、技能、价格表、演示数据
+uv run dba seed                       # 角色 / 价格表 / 预算；未配置管理员变量时不建账号
 uv run uvicorn dba.main:app --port 8000
 ```
+
+首次部署需要创建管理员时，先在 `.env` 中配置（**不要提交真实口令**）：
+
+```ini
+DBA_BOOTSTRAP_ADMIN_USERNAME=admin
+DBA_BOOTSTRAP_ADMIN_PASSWORD=<强口令>
+```
+
+然后再执行 `uv run dba seed`。两项缺一即跳过账号创建；重复执行会刷新该账号的口令哈希。
 
 本机没有 `uv` 时可直接用虚拟环境：
 
@@ -154,14 +163,17 @@ npm run dev        # 开发服务器，默认 http://127.0.0.1:5173
 
 Vite 已把 `/api` 代理到 `http://127.0.0.1:8000`，本地无需处理跨域。后端启动后可用 `npm run gen:api` 重新生成 `src/types/api.d.ts`。
 
-### 演示账号
+### 账号管理
 
-| 账号 | 口令 | 说明 |
-|---|---|---|
-| `admin` | `admin123` | 管理员，可改语义层、预算与护栏策略 |
-| `analyst1` | `analyst123` | 业务线 1 的分析师 |
+仓库不内置任何账号或口令。首次部署按上节配置 `DBA_BOOTSTRAP_ADMIN_USERNAME` /
+`DBA_BOOTSTRAP_ADMIN_PASSWORD` 并执行 `dba seed`，即可创建带 `admin` 角色的首个管理员。
 
-`dba seed --demo` 会创建演示事实表 `fact_sales`（45 天数据，含省份 / 品类 / 渠道维度），并把口径与字段映射登记为 `sem_metric` / `sem_field_mapping`，因此问答链路可直接跑通。**生产环境必须修改这两个口令。**
+- 口令只以 SHA-256 摘要写入 `auth_user.password_hash`，明文不落库；登录校验只接受摘要，明文行无法登录。
+- 轮换口令：更新环境变量后重跑 `dba seed`，会对同名用户刷新摘要。
+- 其余用户通过语义层/管理接口创建并授予角色；`admin`、`analyst`、`viewer` 三个角色由 `dba seed` 写入。
+- 不要把管理员口令写进 `.env` 以外的任何文件；`.env` 已被 gitignore。
+
+生产部署前应确认：JWT 密钥 `DBA_JWT_SECRET` 不是默认值、Agent 上报令牌 `DBA_AGENT_TOKEN` 已设置、硬熔断 `DBA_GUARDRAIL_ALLOW_CIRCUIT_BREAK` 按实际策略配置。
 
 ---
 
@@ -197,7 +209,7 @@ Vite 已把 `/api` 代理到 `http://127.0.0.1:8000`，本地无需处理跨域�
 
 ### 接入真实模型
 
-默认使用确定性演示替身（`DemoLLMClient`），同一问题结果稳定，便于本地开发。要让大屏真正随问题变化，在 `.env` 中配置：
+未配置模型凭据时使用本地确定性替身（`DemoLLMClient`），同一问题结果稳定，便于在没有外部 API 的环境里验证流程。生产环境必须接入真实模型，在 `.env` 中配置：
 
 ```ini
 DBA_LLM_PROVIDER=deepseek
@@ -213,7 +225,7 @@ DBA_LLM_ALLOW_DEV=true                          # dev 默认走替身，置 true
 3. `DBA_ENV=dev` 且未设 `DBA_LLM_ALLOW_DEV=true` → 替身（避免开发期误打付费 API）；
 4. 否则 → 真实模型。
 
-真实模型依赖语义层才知道表结构，使用前请确认已执行 `uv run dba seed --demo`。
+真实模型依赖语义层才知道表结构，生产环境需先通过语义层接口登记指标口径与字段映射，再开放问答入口。
 
 ### 组件降级
 
@@ -303,7 +315,7 @@ L1 接入 api/  →  L3 领域 modules/  →  L4 能力 capabilities/  →  L5 �
 |---|---|
 | 后端开发启动 | `uv run uvicorn dba.main:app --reload --port 8000` |
 | 数据库变更 | 新建 `migrations/versions/xxx.py` 后 `uv run dba migrate` |
-| 造演示数据 | `uv run dba seed --demo` |
+| 灌入基础种子 | `uv run dba seed`（创建管理员需先配置环境变量） |
 | 前端开发 | `cd frontend && npm run dev` |
 | 前端类型检查 | `cd frontend && npm run lint` |
 | 前端构建 | `cd frontend && npm run build` |

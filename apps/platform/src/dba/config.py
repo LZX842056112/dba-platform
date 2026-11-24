@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     refresh_token_ttl_s: int = 1209600
     #: Agent 上报 token（X-Agent-Token）。为空时上报接口拒绝请求。
     agent_token: str = ""
+    #: 首个管理员初始化（仅 ``dba seed`` 读取；为空时不创建任何账号）
+    bootstrap_admin_username: str = ""
+    bootstrap_admin_password: str = ""
 
     # ── 预算守卫护栏（§6.5）──────────────────────────────────
     guardrail_enabled: bool = True

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -47,8 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("bootstrap-storage", help="建 Milvus collection / ES index / MinIO bucket")
     b.add_argument("--only", default=None, help="仅初始化指定组件（milvus/es/minio）")
 
-    s = sub.add_parser("seed", help="灌入口径 / 技能模板 / 价格表 / 演示数据")
-    s.add_argument("--demo", action="store_true", help="含演示业务数据")
+    s = sub.add_parser("seed", help="灌入角色 / 价格表 / 预算；可初始化首个管理员")
 
     r = sub.add_parser("reindex", help="重建检索索引（Milvus / ES）")
     r.add_argument("--target", default="all", help="milvus | es | all")
@@ -149,17 +149,21 @@ def cmd_bootstrap_storage(args: argparse.Namespace) -> int:
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
-    """造数：口径 / 技能模板 / 价格表 / 演示数据。★ B2 落地（``scripts/seed.py``）。"""
+    """灌入角色 / 价格表 / 预算；设置环境变量时初始化首个管理员。"""
     settings = get_settings()
     script = _project_root() / "scripts" / "seed.py"
     if not script.exists():
         print(f"[seed] 未找到造数脚本：{script}", file=sys.stderr)
         return 2
     cmd = [sys.executable, str(script), "--dsn", settings.mysql_dsn]
-    if args.demo:
-        cmd.append("--demo")
+    # Settings 已读 .env；seed.py 作为独立进程读 os.environ，这里显式透传管理员凭据
+    env = os.environ.copy()
+    if settings.bootstrap_admin_username:
+        env["DBA_BOOTSTRAP_ADMIN_USERNAME"] = settings.bootstrap_admin_username
+    if settings.bootstrap_admin_password:
+        env["DBA_BOOTSTRAP_ADMIN_PASSWORD"] = settings.bootstrap_admin_password
     try:
-        completed = subprocess.run(cmd, check=False)  # noqa: S603
+        completed = subprocess.run(cmd, check=False, env=env)  # noqa: S603
     except OSError as exc:
         print(f"[seed] 执行失败：{exc}", file=sys.stderr)
         return 1

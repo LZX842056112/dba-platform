@@ -3,14 +3,15 @@
 对齐《设计文档 v2》§7.2 与《实现要点清单》§1.6。
 
 * HS256 JWT 由 ``api.deps`` 用标准库实现（不引 PyJWT）；
-* 登录校验 ``auth_user.password_hash``：兼容明文与 ``sha256`` 十六进制（演示数据），
-  生产必须改为 bcrypt/argon2（见报告遗留问题）；
+* 登录校验 ``auth_user.password_hash``：仅接受 ``sha256`` 十六进制摘要，明文行一律拒绝；
+  该摘要算法无盐，后续应迁移到 bcrypt/argon2（需同步历史数据）；
 * ``/auth/me`` 返回 ``scope_summary``（可访问表 + 行级权限谓词 + ``hash``）。
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 from typing import Annotated, Any
@@ -43,9 +44,9 @@ ADMIN_ROLE_ID = 1
 
 
 def _verify_password(password: str, stored: str) -> bool:
-    """校验口令：兼容 ``sha256`` 十六进制与明文（演示）。"""
+    """校验口令：库内只接受 sha256 十六进制摘要，明文口令一律拒绝。"""
     digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    return stored in (digest, password)
+    return hmac.compare_digest(stored, digest)
 
 
 @router.post("/login")
