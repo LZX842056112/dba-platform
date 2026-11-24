@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -157,7 +156,7 @@ class ObservabilityService:
             return {}
         if not meta:
             return {}
-        runs = await self._runs_of({"agent_uid": agent_uid, "limit": 20})
+        runs = await self._runs_of({"agent_uid": agent_uid}, limit=20)
         success = sum(1 for r in runs if str(r.get("status")) == "success")
         cost = sum(int(r.get("cost_micro_usd") or 0) for r in runs)
         return {
@@ -188,16 +187,17 @@ class ObservabilityService:
         by_module: dict[str, dict[str, int]] = {}
         total_cost = 0
         total_runs = 0
-        if self._run is not None:
-            async def _one(module: str) -> tuple[str, dict[str, int]]:
-                rows = await self._runs_of({"module": module, "since": since, "until": until})
-                cost = sum(int(r.get("cost_micro_usd") or 0) for r in rows)
-                return module, {"cost_micro_usd": cost, "runs": len(rows)}
-
-            for module, stat in await asyncio.gather(*(_one(m) for m in SELF_MODULES)):
-                by_module[module] = stat
-                total_cost += stat["cost_micro_usd"]
-                total_runs += stat["runs"]
+        # ★ 一次 GROUP BY 取代原「每个模块各拉 ≤1 万行再 sum」。
+        for row in await self._totals_by_module(since=since, until=until):
+            module = str(row.get("module") or "")
+            if module not in SELF_MODULES:
+                continue
+            runs = int(row.get("run_count") or 0)
+            cost = int(row.get("cost_micro_usd") or 0)
+            by_module[module] = {"cost_micro_usd": cost, "runs": runs}
+            total_cost += cost
+            total_runs += runs
+        # 窗口内没有记录的模块不补 0：前端据此显示「没有平台自身运行记录」的诚实空态
         return {
             "by_module": by_module,
             "total_cost_micro_usd": total_cost,
@@ -205,14 +205,43 @@ class ObservabilityService:
             "note": "平台自身消耗（observability/finops），已从业务成本曲线中排除",
         }
 
-    async def _runs_of(self, flt: dict[str, Any]) -> list[dict[str, Any]]:
-        """按过滤条件读取 run 明细（降级为空，不抛异常）。"""
+    async def _aggregate_runs(
+        self, *, since: datetime, until: datetime, biz_line_id: int | None
+    ) -> list[dict[str, Any]]:
+        """按 (业务线, Agent) 聚合 Run；读取失败降级为空，不抛异常。"""
         if self._run is None:
             return []
         try:
-            rows: list[dict[str, Any]] = await self._run.list_runs(
-                {**flt, "limit": 10000}, limit=10000
+            rows: list[dict[str, Any]] = await self._run.aggregate_daily(
+                since, until, biz_line_id=biz_line_id, exclude_modules=()
             )
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 run 聚合失败（降级）：%s", exc)
+            return []
+
+    async def _totals_by_module(self, *, since: datetime, until: datetime) -> list[dict[str, Any]]:
+        """按模块聚合 Run 数与成本；读取失败降级为空。"""
+        if self._run is None:
+            return []
+        try:
+            rows: list[dict[str, Any]] = await self._run.totals_by_module(since, until)
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 run 模块汇总失败（降级）：%s", exc)
+            return []
+
+    async def _runs_of(self, flt: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+        """读取 run 明细（降级为空，不抛异常）。
+
+        ★ ``limit`` 必填：这里只服务「详情/样本」类需求（如 Agent 详情页最近 20 条）。
+          统计类场景请走 ``_aggregate_runs`` / ``_totals_by_module``，
+          不要再用「拉 1 万行回 Python 数一遍」。
+        """
+        if self._run is None:
+            return []
+        try:
+            rows: list[dict[str, Any]] = await self._run.list_runs(flt, limit=limit)
             return rows
         except Exception as exc:  # noqa: BLE001
             logger.warning("读取 run 明细失败（降级）：%s", exc)
@@ -222,33 +251,31 @@ class ObservabilityService:
     async def overview(
         self, *, since: datetime, until: datetime, biz_line_id: int | None = None
     ) -> dict[str, Any]:
-        """``GET /obs/overview`` 的四张 KPI 卡 + 趋势 + top agents。"""
+        """返回区间内的运行指标、成本趋势和 Agent 排行。
+
+        ★ 计数走 ``aggregate_daily``（SQL 侧 GROUP BY），不再把明细行拉回 Python。
+        """
         rows = await self.timeseries(
             metric="cost_micro_usd", since=since, until=until, biz_line_id=biz_line_id
         )
         cost_total = sum(int(r["value"]) for r in rows)
-        runs = await self._runs_of(
-            {"biz_line_id": biz_line_id, "since": since, "until": until}
-        )
-        success = sum(1 for r in runs if str(r.get("status")) == "success")
-        silent = sum(
-            1
-            for r in runs
-            if str(r.get("status")) == "success"
-            and int(r.get("tokens_in") or 0) == 0
-            and int(r.get("tool_calls") or 0) == 0
-        )
-        running = sum(1 for r in runs if str(r.get("status")) == "running")
-        success_rate = (success / len(runs)) if runs else 0.0
+        groups = await self._aggregate_runs(since=since, until=until, biz_line_id=biz_line_id)
+        total = sum(int(g.get("run_count") or 0) for g in groups)
+        success = sum(int(g.get("success_count") or 0) for g in groups)
+        running = sum(int(g.get("running_count") or 0) for g in groups)
+        # 静默失败的判据在 SQL 里（repo.aggregate_daily），此处只取汇总值
+        silent = sum(int(g.get("silent_fail_count") or 0) for g in groups)
+        success_rate = (success / total) if total else 0.0
         return {
             "kpi_cards": {
+                "total_runs": {"value": total, "label": "区间内运行"},
                 "running_now": {"value": running, "label": "当前运行中 Run"},
                 "cost_today_micro": {"value": cost_total},
                 "success_rate": {"value": round(success_rate, 4)},
-                "silent_failures": {"value": silent, "label": "静默失败（窗口内）"},
+                "silent_failures": {"value": silent, "label": "静默失败（零产出，窗口内）"},
             },
             "trend": {"granularity": "day", "series": rows},
-            "top_agents": _top_agents(runs),
+            "top_agents": _top_agents(groups),
         }
 
     async def topology(self, biz_line_id: int | None) -> dict[str, Any]:
@@ -259,17 +286,20 @@ class ObservabilityService:
         return dict(graph.as_dict())
 
 
-def _top_agents(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 agent_uid 聚合 run 数与成功率（top 5）。"""
+def _top_agents(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 agent_uid 汇总已聚合的分组（top 5）。
+
+    输入是 ``aggregate_daily`` 的分组行（已按 业务线 × Agent 聚合），因此这里只需
+    跨业务线再合并一次，不再扫描明细。
+    """
     agg: dict[str, dict[str, int]] = {}
-    for run in runs:
-        uid = str(run.get("agent_uid") or "")
+    for group in groups:
+        uid = str(group.get("agent_uid") or "")
         if not uid:
             continue
         bucket = agg.setdefault(uid, {"runs": 0, "success": 0})
-        bucket["runs"] += 1
-        if str(run.get("status")) == "success":
-            bucket["success"] += 1
+        bucket["runs"] += int(group.get("run_count") or 0)
+        bucket["success"] += int(group.get("success_count") or 0)
     ranked = sorted(agg.items(), key=lambda kv: kv[1]["runs"], reverse=True)[:5]
     return [
         {

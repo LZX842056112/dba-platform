@@ -37,10 +37,11 @@ async def run_rollup(
     :param days_back: 缺省回溯天数（T+1 跑昨日）。
     """
     bundle = container.get("observability")
-    rollup = getattr(bundle, "rollup", None) if bundle is not None else None
-    if rollup is None:
+    if bundle is None:
         logger.warning("rollup 任务跳过：observability 模块未装配")
         return {"ok": False, "reason": "observability_not_assembled"}
+    # ``ObservabilityBundle.rollup`` 是非可选字段，无需 getattr 兜底
+    rollup = bundle.rollup
 
     target = parse_date(stat_date) or (naive_now().date() - timedelta(days=days_back))
 

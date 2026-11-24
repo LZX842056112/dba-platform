@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
+from .silent import is_silent_failure
+
 __all__ = [
     "SELF_MODULES",
     "MAD_SIGN",
@@ -364,8 +366,10 @@ class SilentFailureDetector:
 
     @staticmethod
     def is_silent(record: SilentFailureRecord) -> bool:
-        """判据一：成功但零 token 零工具调用。"""
-        return record.status == "success" and record.tokens == 0 and record.tool_calls == 0
+        """判据一：成功但零 token 零工具调用（唯一实现在 ``silent.is_silent_failure``）。"""
+        return is_silent_failure(
+            status=record.status, tokens_in=record.tokens, tool_calls=record.tool_calls
+        )
 
     @staticmethod
     def is_below_p5(record: SilentFailureRecord) -> bool:

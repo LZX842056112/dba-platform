@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -352,29 +353,19 @@ async def anomaly_detail(
     return await service.anomaly_detail(alert_id) or {}
 
 
-async def _ack_alert(alert_id: int, container: Container, principal: Principal) -> dict[str, Any]:
-    """将告警标记为已确认；数据库状态是唯一结果依据。"""
+async def _set_alert_state(
+    container: Container,
+    apply: Callable[[Any], Awaitable[Any]],
+) -> dict[str, Any]:
+    """对告警执行一次状态变更；数据库状态是唯一结果依据。
+
+    异常不在此处捕获：``api/errors.py`` 的兜底处理器已经用 ``logger.exception``
+    记录完整堆栈，这里再包一层 ``try/except + raise`` 只会多一条无堆栈的日志。
+    """
     repos = storage_or_default(container)
     if repos is None:
         return {"ok": False, "reason": "storage_unavailable"}
-    try:
-        await repos.alert_event.ack(alert_id, principal.user_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("异常确认失败：%s", exc)
-        raise
-    return {"ok": True}
-
-
-async def _resolve_alert(alert_id: int, container: Container) -> dict[str, Any]:
-    """将 open/acked 告警置为 resolved，重复操作保持幂等。"""
-    repos = storage_or_default(container)
-    if repos is None:
-        return {"ok": False, "reason": "storage_unavailable"}
-    try:
-        await repos.alert_event.resolve(alert_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("异常解决失败：%s", exc)
-        raise
+    await apply(repos.alert_event)
     return {"ok": True}
 
 
@@ -387,7 +378,9 @@ async def ack_anomaly(
 ) -> dict[str, Any]:
     """``POST /obs/anomalies/{id}/ack``。"""
     _ = payload
-    return await _ack_alert(alert_id, container, principal)
+    return await _set_alert_state(
+        container, lambda events: events.ack(alert_id, principal.user_id)
+    )
 
 
 @router.post("/anomalies/{alert_id}/resolve")
@@ -397,9 +390,9 @@ async def resolve_anomaly(
     container: Annotated[Container, Depends(get_container)],
     principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict[str, Any]:
-    """``POST /obs/anomalies/{id}/resolve``：将告警置为已解决。"""
+    """``POST /obs/anomalies/{id}/resolve``：将告警置为已解决（重复操作幂等）。"""
     _ = (payload, principal)
-    return await _resolve_alert(alert_id, container)
+    return await _set_alert_state(container, lambda events: events.resolve(alert_id))
 
 
 @router.post("/otel/v1/traces", response_model=None)
@@ -410,9 +403,10 @@ async def otel_traces(
 ) -> dict[str, Any] | JSONResponse:
     """``POST /obs/otel/v1/traces``：OTLP/HTTP（JSON）接入（§7.4）。"""
     bundle = container.get("observability")
-    ingester = getattr(bundle, "otel", None) if bundle is not None else None
-    if ingester is None:
+    if bundle is None:
         return {"partialSuccess": {"rejectedSpans": 0, "errorMessage": "observability 未装配"}}
+    # ``ObservabilityBundle.otel`` 是非可选字段，无需 getattr 兜底
+    ingester = bundle.otel
     content_type = request.headers.get("content-type", "")
     if "protobuf" in content_type:
         proto_result = await ingester.ingest_protobuf(await request.body())

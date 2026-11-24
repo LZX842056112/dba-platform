@@ -37,8 +37,12 @@ async def run_anomaly_scan(
     :param agent_uid: 指定 Agent 维度（优先于业务线维度）。
     """
     bundle = container.get("observability")
-    registry = getattr(bundle, "registry", None) if bundle is not None else None
-    if registry is None or not registry.has("anomaly"):
+    if bundle is None:
+        logger.warning("异常扫描跳过：observability 模块未装配")
+        return {"ok": False, "reason": "observability_not_assembled"}
+    # ``ObservabilityBundle.registry`` 是非可选字段；但 registry 里未必注册了 anomaly Agent
+    registry = bundle.registry
+    if not registry.has("anomaly"):
         logger.warning("异常扫描跳过：observability.anomaly 未装配")
         return {"ok": False, "reason": "anomaly_agent_not_assembled"}
 

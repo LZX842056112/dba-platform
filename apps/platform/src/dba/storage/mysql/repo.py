@@ -299,6 +299,63 @@ class RunRepo(_Repo):
         stmt = stmt.order_by(m.Run.started_at.desc()).limit(limit)
         return await self._fetch(stmt)
 
+    async def aggregate_daily(
+        self, since: dt.datetime, until: dt.datetime, *, biz_line_id: int | None,
+        exclude_modules: tuple[str, ...],
+    ) -> list[Row]:
+        """按业务线、Agent 与平台归属汇总指定时间窗内的全部 Run。
+
+        同时服务 rollup（写 ``metric_daily``）与 ``/obs/overview`` 的 KPI 计数：
+        后者曾用 ``list_runs(limit=10000)`` 把整行拉回 Python 再 sum，改为复用本聚合。
+        """
+        run = m.Run
+        biz_line = sa.func.coalesce(run.biz_line_id, 0).label("biz_line_id")
+        agent = sa.func.coalesce(run.agent_uid, "").label("agent_uid")
+        is_self = sa.case((run.module.in_(exclude_modules), 1), else_=0).label("is_self")
+        # ★ 「静默失败」SQL 版判据。Python 版唯一实现在
+        #   ``modules/observability/silent.py::is_silent_failure``，两处语义必须一致。
+        silent = sa.and_(run.status == "success", run.tokens_in == 0, run.tool_calls == 0)
+        stmt = (
+            sa.select(
+                biz_line,
+                agent,
+                is_self,
+                sa.func.count().label("run_count"),
+                sa.func.count(sa.case((run.status == "success", 1))).label("success_count"),
+                sa.func.count(sa.case((run.status == "running", 1))).label("running_count"),
+                sa.func.count(sa.case((run.status.in_(("failed", "aborted")), 1))).label("fail_count"),
+                sa.func.count(sa.case((run.status == "timeout", 1))).label("timeout_count"),
+                sa.func.count(sa.case((silent, 1))).label("silent_fail_count"),
+                sa.func.sum(run.tokens_in).label("tokens_in"),
+                sa.func.sum(run.tokens_out).label("tokens_out"),
+                sa.func.sum(run.cached_tokens).label("cached_tokens"),
+                sa.func.sum(run.cost_micro_usd).label("cost_micro_usd"),
+                sa.func.sum(run.latency_ms).label("latency_sum"),
+            )
+            .where(run.started_at >= since, run.started_at < until)
+            .group_by(biz_line, agent, is_self)
+        )
+        if biz_line_id is not None:
+            stmt = stmt.where(run.biz_line_id == biz_line_id)
+        return await self._fetch(stmt)
+
+    async def totals_by_module(self, since: dt.datetime, until: dt.datetime) -> list[Row]:
+        """按 ``module`` 汇总 Run 数与成本（供 ``/obs/self-cost``）。
+
+        替代原来的「每个模块各拉 1 万行再 sum」：一次 GROUP BY 就够。
+        """
+        run = m.Run
+        stmt = (
+            sa.select(
+                run.module.label("module"),
+                sa.func.count().label("run_count"),
+                sa.func.coalesce(sa.func.sum(run.cost_micro_usd), 0).label("cost_micro_usd"),
+            )
+            .where(run.started_at >= since, run.started_at < until)
+            .group_by(run.module)
+        )
+        return await self._fetch(stmt)
+
 
 class LlmCallRepo(_Repo):
     async def bulk_insert(self, rows: list[Row]) -> int:

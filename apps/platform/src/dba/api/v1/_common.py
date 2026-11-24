@@ -3,7 +3,7 @@
 本模块收敛两类在多个 router 里反复出现的样板代码：
 
 1. **时间窗解析**：finops / observability 都用「``from/to`` + ISO8601 解析 +
-   缺省回退到近 N 小时/天」，统一到 ``parse_ts`` / ``parse_window``，
+   缺省回退到近 N 小时/天」，统一到 ``parse_window``，
    避免解析规则改一处漏一处。
 2. **可选服务降级**：接口层对「模块未装配 / 存储不可用」的统一处理是
    「返回一个空壳默认值，不 500」。此前每个 handler 都手写
@@ -14,24 +14,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from dba.di import Container
+from dba.util.time import parse_utc_naive, utcnow_naive
 
-__all__ = ["parse_ts", "parse_window", "read_run_doc", "service_or_default", "storage_or_default"]
+__all__ = ["parse_window", "read_run_doc", "service_or_default", "storage_or_default"]
 
 logger = logging.getLogger("dba.api.v1.common")
-
-
-def parse_ts(value: str | None) -> datetime | None:
-    """解析 ISO8601 时间串为 naive UTC datetime；空 / 非法返回 ``None``。"""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).replace(tzinfo=None)
-    except ValueError:
-        return None
 
 
 def parse_window(
@@ -41,8 +32,8 @@ def parse_window(
 
     右端点缺省取「当前时刻」，左端点缺省为 ``右端点 - span``；半开区间 ``[since, until)``。
     """
-    until = parse_ts(to) or datetime.now(UTC).replace(tzinfo=None)
-    since = parse_ts(from_) or (until - span)
+    until = parse_utc_naive(to) or utcnow_naive()
+    since = parse_utc_naive(from_) or (until - span)
     return since, until
 
 
@@ -81,11 +72,11 @@ async def read_run_doc(container: Container, trace_id: str) -> dict[str, Any]:
     输入为 DI 容器和 trace id，输出保持 API 既有的字典响应形状。
     """
     mongo_repos = service_or_default(container, "mongo_repos", None)
-    run_doc_repo = getattr(mongo_repos, "run_doc", None)
-    if run_doc_repo is None:
+    if mongo_repos is None:
         return {}
+    # ``MongoRepositories.run_doc`` 在 __init__ 里无条件构造，无需 getattr 兜底
     try:
-        doc = await run_doc_repo.get(trace_id)
+        doc = await mongo_repos.run_doc.get(trace_id)
     except Exception as exc:  # noqa: BLE001 - 详情读取失败时兼容原有空对象回退
         logger.warning("run_doc 读取失败（trace_id=%s）：%s", trace_id, exc)
         return {}
