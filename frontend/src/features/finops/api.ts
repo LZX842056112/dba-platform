@@ -1,6 +1,6 @@
 // FinOps 接口（对齐 backend api/v1/finops.py，§7.5）。
 
-import { api } from '../../api/client';
+import { api, recentWindowQuery } from '../../api/client';
 
 export interface CostSummary {
   total: number;
@@ -61,20 +61,20 @@ export interface FinopsRecommendation {
   estimated_saving_micro_usd?: number;
 }
 
-export function getCostSummary(): Promise<CostSummary> {
-  return api.get<CostSummary>('/finops/cost/summary');
+export function getCostSummary(hours: number): Promise<CostSummary> {
+  return api.get<CostSummary>(`/finops/cost/summary${recentWindowQuery(hours)}`);
 }
 
 export function getCostTimeseries(): Promise<CostTimeseries> {
   return api.get<CostTimeseries>('/finops/cost/timeseries');
 }
 
-export function getTopSpenders(): Promise<Array<{ key: string; cost_micro_usd: number }>> {
-  return api.get<Array<{ key: string; cost_micro_usd: number }>>('/finops/cost/top-spenders');
+export function getTopSpenders(hours: number): Promise<Array<{ key: string; cost_micro_usd: number }>> {
+  return api.get<Array<{ key: string; cost_micro_usd: number }>>(`/finops/cost/top-spenders${recentWindowQuery(hours)}`);
 }
 
-export function getCoverage(): Promise<Coverage> {
-  return api.get<Coverage>('/finops/cost/coverage');
+export function getCoverage(hours: number): Promise<Coverage> {
+  return api.get<Coverage>(`/finops/cost/coverage${recentWindowQuery(hours)}`);
 }
 
 export function getCacheStats(): Promise<CacheStats> {

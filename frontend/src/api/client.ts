@@ -22,18 +22,21 @@ export class ApiError extends Error {
 }
 
 const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api/v1';
+const TOKEN_KEY = 'dba_token';
 
-let authToken: string | null = null;
-
-/** 设置 / 清除 Bearer JWT（内存态；持久化由 AuthProvider 负责）。 */
-export function setAuthToken(token: string | null): void {
-  authToken = token;
+export function getAuthToken(): string | null {
+  return window.localStorage.getItem(TOKEN_KEY);
 }
 
-function buildHeaders(extra?: HeadersInit): Headers {
+export function setAuthToken(token: string | null): void {
+  if (token === null) window.localStorage.removeItem(TOKEN_KEY);
+  else window.localStorage.setItem(TOKEN_KEY, token);
+}
+
+function buildHeaders(token: string | null, extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
   headers.set('Content-Type', 'application/json');
-  if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   return headers;
 }
 
@@ -43,10 +46,18 @@ export async function apiFetch<T>(
   init: RequestInit = {},
   traceId?: string,
 ): Promise<T> {
-  const headers = buildHeaders(init.headers);
+  const token = getAuthToken();
+  const headers = buildHeaders(token, init.headers);
   if (traceId) headers.set('X-Trace-Id', traceId);
 
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (
+    response.status === 401 && path !== '/auth/login' &&
+    token === getAuthToken() && window.location.pathname !== '/login'
+  ) {
+    setAuthToken(null);
+    window.location.replace('/login?expired=1');
+  }
   const text = await response.text();
   const payload: unknown = text ? JSON.parse(text) : {};
 
@@ -63,3 +74,9 @@ export const api = {
   patch: <T>(path: string, body: unknown, traceId?: string): Promise<T> =>
     apiFetch<T>(path, { method: 'PATCH', body: JSON.stringify(body) }, traceId),
 };
+
+export function recentWindowQuery(hours: number): string {
+  const until = new Date();
+  const since = new Date(until.getTime() - hours * 3_600_000);
+  return `?${new URLSearchParams({ from: since.toISOString(), to: until.toISOString() })}`;
+}
