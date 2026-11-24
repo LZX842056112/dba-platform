@@ -103,7 +103,6 @@ def build_chatbi(
         router=router,
         semantic=semantic,
         scope_compiler=RowScopeCompiler(scope_rule_repo),
-        chain=chain,
         executor=executor,
         spec_builder=spec_builder,
         memory=memory,

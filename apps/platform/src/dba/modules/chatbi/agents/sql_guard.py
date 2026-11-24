@@ -19,7 +19,7 @@ from dba_runtime.agent import AgentOutput
 from dba_runtime.context import RunContext
 from dba_runtime.telemetry import traced
 
-from ..guard.base import SqlGuardChain
+from ..executor import QueryExecutor, query_context
 
 __all__ = ["SqlGuardAgent"]
 
@@ -29,14 +29,15 @@ class SqlGuardAgent:
 
     name = "sql_guard"
 
-    def __init__(self, chain: SqlGuardChain) -> None:
-        self._chain = chain
+    def __init__(self, executor: QueryExecutor) -> None:
+        self._executor = executor
 
     @traced("step.sql_guard", kind="guard")
     async def run(self, payload: dict[str, Any], ctx: RunContext) -> AgentOutput:
         sql = str(payload.get("sql") or "")
         scope = payload.get("_scope")
-        result = await self._chain.validate(sql, ctx, scope)
+        effective = query_context(ctx, payload.get("scope_hash"))
+        result = await self._executor.prepare_primary(sql, effective, scope)
         final_sql = result.rewritten_sql or sql
 
         last = payload.get("_last_failure")

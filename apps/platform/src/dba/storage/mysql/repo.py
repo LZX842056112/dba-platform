@@ -141,12 +141,13 @@ class AuthRoleRepo(_Repo):
 
 
 class UserRoleRepo(_Repo):
-    async def grant(self, user_id: int, role_id: int) -> None:
-        # 幂等授予：重复授予不报错（用 INSERT IGNORE 语义）
-        stmt = (
-            sa.insert(m.AuthUserRole).prefix_with("IGNORE").values(user_id=user_id, role_id=role_id)
-        )
-        await self._execute(stmt)
+    async def grant_many(self, user_id: int, role_ids: list[int]) -> None:
+        """在一个事务内授予角色。已存在的授权保持原值。"""
+        if not role_ids:
+            return
+        rows = [{"user_id": user_id, "role_id": role_id} for role_id in sorted(set(role_ids))]
+        stmt = mysql_insert(m.AuthUserRole.__table__).values(rows)
+        await self._execute(stmt.on_duplicate_key_update(role_id=m.AuthUserRole.role_id))
 
 
 class RowScopeRuleRepo(_Repo):
@@ -420,13 +421,16 @@ class LlmCallRepo(_Repo):
         )
         return await self._fetch(stmt)
 
-    async def coverage_stats(self, biz_line_id: int | None = None) -> dict[str, Any]:
+    async def coverage_stats(
+        self, biz_line_id: int | None = None, *, since: dt.datetime, until: dt.datetime
+    ) -> dict[str, Any]:
         """计价覆盖率统计：priced 判定 = 命中价格表（``price_book_id`` 非空）。
 
-        ★ ``llm_call`` 无时间戳列，故覆盖率为「全历史」口径（诚实标注，不假装时间窗）。
-        ★ 只做一次 ``GROUP BY provider``，总量由分组求和派生（避免两次全表扫）。
+        按调用时间筛选，再按供应商汇总。
         """
-        conds = [m.LlmCall.biz_line_id == biz_line_id] if biz_line_id is not None else []
+        conds = [m.LlmCall.created_at >= since, m.LlmCall.created_at < until]
+        if biz_line_id is not None:
+            conds.append(m.LlmCall.biz_line_id == biz_line_id)
         priced_case = sa.case((m.LlmCall.price_book_id.isnot(None), 1), else_=0)
         by_provider = await self._fetch(
             sa.select(

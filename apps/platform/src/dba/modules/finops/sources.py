@@ -22,8 +22,7 @@ def build_coverage_source(repos: Any) -> Any:
     """
 
     async def coverage(since: Any, until: Any, biz_line_id: int | None = None) -> dict[str, Any]:
-        _ = (since, until)  # llm_call 无时间戳列，覆盖率为全历史口径
-        stats = await repos.llm_call.coverage_stats(biz_line_id)
+        stats = await repos.llm_call.coverage_stats(biz_line_id, since=since, until=until)
         total = stats["total"]
         return {
             "priced_ratio": round(stats["priced"] / total, 4) if total else 0.0,

@@ -33,10 +33,6 @@ from .config import Settings
 
 logger = logging.getLogger("dba.di")
 
-Factory = Callable[[], Any]
-Key = str
-
-
 # ─────────────────────────────────────────────────────────────────────
 # 占位实现（可选驱动缺失 / 测试环境时降级；绝不冒充真实实现）
 # ─────────────────────────────────────────────────────────────────────
@@ -597,42 +593,20 @@ class CompositeHealthProbe:
 # 容器
 # ─────────────────────────────────────────────────────────────────────
 class Container:
-    """极简 DI 容器：register / override / get（带单例缓存）。"""
+    """保存已装配的服务实例。"""
 
     def __init__(self) -> None:
-        self._factories: dict[Key, Factory] = {}
-        self._singletons: dict[Key, Any] = {}
-        self._overrides: dict[Key, Any] = {}
+        self._instances: dict[str, Any] = {}
 
-    def register(self, key: Key, factory: Factory) -> None:
-        self._factories[key] = factory
+    def set(self, key: str, instance: Any) -> None:
+        self._instances[key] = instance
 
-    def set(self, key: Key, instance: Any) -> None:
-        """直接登记单例（装配阶段用）。"""
-        self._singletons[key] = instance
-
-    def override(self, key: Key, instance: Any) -> None:
-        """测试用：直接注入实例（绕过工厂）。"""
-        self._overrides[key] = instance
-
-    def has(self, key: Key) -> bool:
-        return key in self._overrides or key in self._factories or key in self._singletons
-
-    def get(self, key: Key, default: Any = None) -> Any:
-        if key in self._overrides:
-            return self._overrides[key]
-        if key in self._singletons:
-            return self._singletons[key]
-        factory = self._factories.get(key)
-        if factory is None:
-            return default
-        instance = factory()
-        self._singletons[key] = instance
-        return instance
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._instances.get(key, default)
 
     async def aclose(self) -> None:
         """关闭容器内可关闭资源。"""
-        for instance in list(self._singletons.values()):
+        for instance in list(self._instances.values()):
             closer: Callable[[], Awaitable[Any]] | None = getattr(instance, "aclose", None)
             if closer is not None:
                 try:

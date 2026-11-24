@@ -190,11 +190,7 @@ async def grant_roles(
     role_ids = [int(r) for r in (payload.get("role_ids") or [])]
     if repos is None:
         return JSONResponse({"ok": False, "reason": "storage_unavailable"}, status_code=503)
-    for role_id in role_ids:
-        try:
-            await repos.user_role.grant(user_id, role_id)
-        except Exception:  # noqa: BLE001 - 已存在（复合主键冲突）即幂等
-            continue
+    await repos.user_role.grant_many(user_id, role_ids)
     return JSONResponse({"ok": True})
 
 

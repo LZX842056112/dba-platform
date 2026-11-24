@@ -24,20 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from dba_runtime.errors import StorageUnavailableError
+
 from .anomaly import SELF_MODULES
 
 __all__ = ["RollupReport", "RollupService"]
 
 logger = logging.getLogger("dba.modules.observability.rollup")
-
-#: ``run.status`` → metric_daily 计数列
-_STATUS_COLUMNS: dict[str, str] = {
-    "success": "success_count",
-    "failed": "fail_count",
-    "timeout": "timeout_count",
-    "aborted": "fail_count",
-}
-
 
 @dataclass(slots=True)
 class RollupReport:
@@ -72,57 +65,24 @@ class RollupService:
 
     async def run(self, stat_date: date, *, biz_line_id: int | None = None) -> RollupReport:
         """执行一次 rollup。**全量重算**，重复调用结果一致（幂等）。"""
+        if self._run_repo is None:
+            raise StorageUnavailableError("缺少 Run 仓储", detail={"component": "mysql"})
         report = RollupReport(stat_date=stat_date)
         since = datetime.combine(stat_date, datetime.min.time())
         until = since + timedelta(days=1)
 
-        runs = await self._load_runs(since, until, biz_line_id)
-        report.run_count = len(runs)
-
-        buckets: dict[tuple[int, str, str], dict[str, int]] = defaultdict(
-            lambda: {
-                "run_count": 0,
-                "success_count": 0,
-                "fail_count": 0,
-                "timeout_count": 0,
-                "silent_fail_count": 0,
-                "tokens_in": 0,
-                "tokens_out": 0,
-                "cached_tokens": 0,
-                "cost_micro_usd": 0,
-                "latency_sum": 0,
-                "llm_calls": 0,
-                "tool_calls": 0,
-            }
+        totals = await self._run_repo.aggregate_daily(
+            since, until, biz_line_id=biz_line_id, exclude_modules=self.exclude_modules
         )
-
-        for run in runs:
-            module = str(run.get("module") or "")
-            if module in self.exclude_modules:
-                report.self_run_count += 1
+        buckets: dict[tuple[int, str, str], dict[str, Any]] = defaultdict(dict)
+        for group in totals:
+            count = int(group["run_count"])
+            report.run_count += count
+            if group["is_self"]:
+                report.self_run_count += count
                 continue
-            key = (
-                int(run.get("biz_line_id") or 0),  # ★ P1-1：哨兵 0 = 全局/未归属
-                str(run.get("agent_uid") or ""),
-                "",  # model 维度：run 表无 model，按维度不细分（模型维度由 llm_call 明细回填）
-            )
-            b = buckets[key]
-            b["run_count"] += 1
-            status = str(run.get("status") or "")
-            col = _STATUS_COLUMNS.get(status)
-            if col:
-                b[col] += 1
-            tokens_in = int(run.get("tokens_in") or 0)
-            tool_calls = int(run.get("tool_calls") or 0)
-            if status == "success" and tokens_in == 0 and tool_calls == 0:
-                b["silent_fail_count"] += 1
-            b["tokens_in"] += tokens_in
-            b["tokens_out"] += int(run.get("tokens_out") or 0)
-            b["cached_tokens"] += int(run.get("cached_tokens") or 0)
-            b["cost_micro_usd"] += int(run.get("cost_micro_usd") or 0)
-            b["latency_sum"] += int(run.get("latency_ms") or 0)
-            b["llm_calls"] += int(run.get("llm_calls") or 0)
-            b["tool_calls"] += tool_calls
+            key = (int(group["biz_line_id"]), str(group["agent_uid"]), "")
+            buckets[key] = group
 
         # ★ P1-1 修复：技能/记忆指标须**并入**全局 bucket，而非另起一行。
         #   ``_metric_rows`` 返回的全局行主键与「biz_line_id=0 的 run bucket」相同
@@ -153,44 +113,26 @@ class RollupService:
         )
         return report
 
-    async def _load_runs(
-        self, since: datetime, until: datetime, biz_line_id: int | None
-    ) -> list[dict[str, Any]]:
-        if self._run_repo is None:
-            return []
-        limit = 100000
-        try:
-            rows: list[dict[str, Any]] = await self._run_repo.list_runs(
-                {"biz_line_id": biz_line_id, "since": since, "until": until, "limit": limit},
-                limit=limit,
-            )
-            return rows
-        except Exception as exc:  # noqa: BLE001 - 读取失败降级为空（不写脏数据）
-            logger.warning("rollup 读取 run 明细失败（降级为空）：%s", exc)
-            return []
-
     @staticmethod
-    def _to_row(stat_date: date, key: tuple[int, str, str], b: dict[str, int]) -> dict[str, Any]:
+    def _to_row(stat_date: date, key: tuple[int, str, str], b: dict[str, Any]) -> dict[str, Any]:
         """聚合成一行 ``metric_daily``（★ ``avg_latency_ms`` 按 count 加权）。"""
         biz_line_id, agent_uid, model = key
-        run_count = b["run_count"]
-        avg_latency = (b["latency_sum"] // run_count) if run_count else None
-        # ★ 只放 metric_daily 真实存在的列：``llm_calls``/``tool_calls`` 不属于本表
-        #   （它们只用于上面判定静默失败），带进来会因「未知列」导致 upsert 全表失败。
+        run_count = int(b.get("run_count", 0))
+        avg_latency = int(b.get("latency_sum") or 0) // run_count if run_count else None
         row: dict[str, Any] = {
             "stat_date": stat_date,
             "biz_line_id": biz_line_id,
             "agent_uid": agent_uid,
             "model": model,
             "run_count": run_count,
-            "success_count": b["success_count"],
-            "fail_count": b["fail_count"],
-            "timeout_count": b["timeout_count"],
-            "silent_fail_count": b["silent_fail_count"],
-            "tokens_in": b["tokens_in"],
-            "tokens_out": b["tokens_out"],
-            "cached_tokens": b["cached_tokens"],
-            "cost_micro_usd": b["cost_micro_usd"],
+            "success_count": int(b.get("success_count", 0)),
+            "fail_count": int(b.get("fail_count", 0)),
+            "timeout_count": int(b.get("timeout_count", 0)),
+            "silent_fail_count": int(b.get("silent_fail_count", 0)),
+            "tokens_in": int(b.get("tokens_in", 0)),
+            "tokens_out": int(b.get("tokens_out", 0)),
+            "cached_tokens": int(b.get("cached_tokens", 0)),
+            "cost_micro_usd": int(b.get("cost_micro_usd", 0)),
             "avg_latency_ms": avg_latency,
         }
         # ★ 并入全局 bucket 的技能/记忆指标列（仅全局行携带；其余 bucket 无此键，不写）

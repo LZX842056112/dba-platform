@@ -9,7 +9,24 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-__all__ = ["utcnow_naive", "recent_window"]
+__all__ = ["parse_utc_naive", "utcnow_naive", "recent_window"]
+
+
+def parse_utc_naive(value: object) -> datetime | None:
+    """解析 ISO 8601 时间。无时区标记的时间按 UTC 处理。"""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.utcoffset() is None:
+        return value.replace(tzinfo=None)
+    try:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    except OverflowError:
+        return None
 
 
 def utcnow_naive() -> datetime:

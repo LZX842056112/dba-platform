@@ -5,13 +5,11 @@
 ★ 与 ⑤ dry-run 护栏的区别：dry-run 只做 ``EXPLAIN``（不取数），本步骤才真正取数，
   因此超时 / 行数 / 权限三重约束在这里同时生效。
 
-★ 唯一执行入口：本 Agent 不直接拿连接，一律调 ``QueryExecutor.execute``——
-  任何绕过它的取数路径都违反红线 6。
+★ 主查询使用 SQL 校验步骤的结果。附加查询逐条通过 QueryExecutor 的完整护栏链。
 """
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from typing import Any
 
@@ -19,7 +17,7 @@ from dba_runtime.agent import AgentOutput
 from dba_runtime.context import RunContext
 from dba_runtime.telemetry import traced
 
-from ..executor import QueryExecutor
+from ..executor import QueryExecutor, query_context
 
 __all__ = ["SqlExecAgent", "columns_from_rows"]
 
@@ -64,9 +62,8 @@ class SqlExecAgent:
             await ctx.emitter.emit("sql.executing", {"sql": sql, "max_rows": max_rows})
 
         # 把 schema_link 阶段算出的 scope_hash 带进执行上下文（供 sql_audit 记录）。
-        scope_hash = payload.get("scope_hash") or ctx.scope_hash
-        effective = dataclasses.replace(ctx, scope_hash=scope_hash) if scope_hash else ctx
-        rows, meta = await self._executor.execute(sql, effective, scope, max_rows=max_rows)
+        effective = query_context(ctx, payload.get("scope_hash"))
+        rows, meta = await self._executor.execute_primary(sql, effective, scope, max_rows=max_rows)
 
         # ★ 多查询：主查询之外的 ref 逐条执行（**同一条 QueryExecutor**，护栏全覆盖）。
         #   无 ``queries`` 时只返回主结果，单查询路径行为与改动前完全一致。

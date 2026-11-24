@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any
 
 from dba.capabilities.budget import GuardrailPolicy
-from dba.util.time import recent_window, utcnow_naive
+from dba.util.time import utcnow_naive
 
 __all__ = ["FinopsService"]
 
@@ -109,11 +109,9 @@ class FinopsService:
         return dict(result.as_dict())
 
     async def top_spenders(
-        self, *, dimension: str, period: str, limit: int = 20
+        self, *, dimension: str, since: datetime, until: datetime, limit: int = 20
     ) -> list[dict[str, Any]]:
         """``GET /finops/cost/top-spenders``。"""
-        _ = period
-        since, until = recent_window(days=30)
         rows = await self._timeseries("cost_micro_usd", since, until, None)
         agg: dict[str, int] = {}
         for row in rows:

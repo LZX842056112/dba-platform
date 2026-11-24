@@ -21,8 +21,6 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import text
-
 from ._common import naive_now
 
 __all__ = ["maintain_partitions"]
@@ -32,7 +30,7 @@ logger = logging.getLogger("dba.worker.jobs.partition")
 #: 按月 RANGE 分区的两张表（§5.2.3 run / §5.2.5 metric_daily）
 _TABLES = ("metric_daily", "run")
 
-_EXISTING_SQL = text(
+_EXISTING_SQL = (
     "SELECT PARTITION_NAME FROM information_schema.PARTITIONS "
     "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND PARTITION_NAME IS NOT NULL"
 )
@@ -58,8 +56,10 @@ def _target_months(months_ahead: int) -> list[tuple[str, str]]:
 
 async def _maintain_table(engine: Any, table: str, months_ahead: int) -> dict[str, Any]:
     """确保 ``table`` 未来 ``months_ahead`` 个月的分区存在（幂等）。"""
+    from sqlalchemy import text  # noqa: PLC0415
+
     async with engine.connect() as conn:
-        result = await conn.execute(_EXISTING_SQL, {"t": table})
+        result = await conn.execute(text(_EXISTING_SQL), {"t": table})
         existing = {str(row[0]) for row in result.fetchall()}
 
     if _MAXX not in existing:

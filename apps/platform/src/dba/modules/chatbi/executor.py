@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from dba_runtime.context import RunContext
 from dba_runtime.errors import DbaError, TransientSqlError, classify
@@ -33,9 +36,9 @@ from dba_runtime.tools.sql_tool import ExecMeta
 
 from dba.storage.protocols import SqlAuditRepo
 
-from .guard.base import SqlGuardChain
+from .guard.base import GuardResult, SqlGuardChain, sql_guard_error
 from .guard.dry_run import ReadOnlyConnection
-from .guard.row_scope import ScopePredicate
+from .guard.row_scope import CompiledScope, ScopePredicate
 
 __all__ = ["QueryExecutor"]
 
@@ -43,14 +46,61 @@ DEFAULT_MAX_ROWS = 5000
 DEFAULT_TIMEOUT_S = 30.0
 
 
+def query_context(ctx: RunContext, scope_hash: str | None) -> RunContext:
+    return replace(ctx, scope_hash=scope_hash) if scope_hash else ctx
+
+
+@dataclass(frozen=True)
+class _PreparedQuery:
+    original: str
+    sql: str
+    scope_injected: bool
+
+
+@dataclass(frozen=True)
+class _PendingPrimary:
+    query: _PreparedQuery
+    ctx: RunContext
+    scope: CompiledScope | None
+
+
 class QueryExecutor:
     """唯一真实 SQL 执行入口（同时实现内核 ``SqlRunner``）。"""
 
     def __init__(self, chain: SqlGuardChain, pool: Any, audit: SqlAuditRepo) -> None:
         self._chain = chain
-        self._pool = pool
         self._conn = ReadOnlyConnection(pool)
         self._audit = audit
+        self._pending: WeakKeyDictionary[asyncio.Task[Any], _PendingPrimary] = WeakKeyDictionary()
+
+    async def _prepare(
+        self, sql: str, ctx: RunContext, scope: ScopePredicate | None
+    ) -> _PreparedQuery:
+        result = await self._chain.validate(sql, ctx, scope)
+        return _PreparedQuery(sql, result.rewritten_sql or sql, result.scope_injected)
+
+    async def prepare_primary(
+        self, sql: str, ctx: RunContext, scope: CompiledScope | None
+    ) -> GuardResult:
+        """校验本次流水线的主查询。重新校验前先清除旧结果。"""
+        task = asyncio.current_task()
+        assert task is not None
+        self._pending.pop(task, None)
+        snapshot = deepcopy(scope)
+        query = await self._prepare(sql, ctx, snapshot)
+        self._pending[task] = _PendingPrimary(query, ctx, snapshot)
+        return GuardResult(ok=True, rewritten_sql=query.sql, scope_injected=query.scope_injected)
+
+    async def execute_primary(
+        self, sql: str, ctx: RunContext, scope: CompiledScope | None, *, max_rows: int
+    ) -> tuple[list[dict[str, Any]], ExecMeta]:
+        """一次性取出本任务的主查询。执行失败后须重新校验。"""
+        task = asyncio.current_task()
+        assert task is not None
+        pending = self._pending.pop(task, None)
+        if pending is None or pending.query.sql != sql or pending.ctx != ctx or pending.scope != scope:
+            raise sql_guard_error("主查询的校验结果已失效", "SQL_GUARD_BLOCKED", stage="sql_exec")
+        return await self._fetch(pending.query, ctx, max_rows, DEFAULT_TIMEOUT_S)
 
     async def execute(
         self,
@@ -62,15 +112,17 @@ class QueryExecutor:
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> tuple[list[dict[str, Any]], ExecMeta]:
         """执行只读 SQL：先过护栏，再用独立只读连接取数，最后写审计。"""
-        # ① 护栏链（只读白名单 → 方言 → 行级注入 → 覆盖性断言 → LIMIT + 超时提示）
-        result = await self._chain.validate(sql, ctx, scope)
-        final_sql = result.rewritten_sql or sql
+        query = await self._prepare(sql, ctx, scope)
+        return await self._fetch(query, ctx, max_rows, timeout_s)
 
+    async def _fetch(
+        self, query: _PreparedQuery, ctx: RunContext, max_rows: int, timeout_s: float
+    ) -> tuple[list[dict[str, Any]], ExecMeta]:
         # ②③ 独立只读连接 + 应用侧超时（连接级 MAX_EXECUTION_TIME 由只读池设置）
         started = time.perf_counter()
         try:
             async with asyncio.timeout(timeout_s):
-                rows, truncated = await self._conn.fetch(final_sql, max_rows=max_rows)
+                rows, truncated = await self._conn.fetch(query.sql, max_rows=max_rows)
         except TimeoutError as exc:
             raise TransientSqlError(
                 f"SQL 执行超时（{timeout_s}s）",
@@ -87,17 +139,17 @@ class QueryExecutor:
         meta: ExecMeta = {
             "row_count": len(rows),
             "exec_ms": exec_ms,
-            "scope_injected": result.scope_injected,
+            "scope_injected": query.scope_injected,
             "truncated": truncated,
         }
 
         # ④ 审计（含 scope_hash，便于事后抽查「注入了权限的样本」）
         await self._audit.write(
             trace_id=ctx.trace_id,
-            sql_text=sql,
-            rewritten_sql=final_sql,
+            sql_text=query.original,
+            rewritten_sql=query.sql,
             decision="rewrite",
-            scope_injected=result.scope_injected,
+            scope_injected=query.scope_injected,
             scope_hash=ctx.scope_hash,
             rows_returned=len(rows),
             exec_ms=exec_ms,

@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from dba.api.deps import Principal, get_container, get_current_principal
 from dba.api.stream_tickets import issue_ticket_response
 from dba.di import Container
+from dba.util.time import parse_utc_naive, utcnow_naive
 
 __all__ = ["router", "build_sse_frames"]
 
@@ -76,9 +77,9 @@ async def issue_ticket(
     trace_id = str(payload.get("trace_id") or "")
     if not trace_id:
         return JSONResponse(status_code=400, content={"code": "40001", "message": "缺少 trace_id"})
-    now = datetime.now(UTC).replace(tzinfo=None)
-    since = _parse_time(payload.get("since")) or (now - timedelta(days=1))
-    until = _parse_time(payload.get("until")) or (now + timedelta(days=1))
+    now = utcnow_naive()
+    since = parse_utc_naive(payload.get("since")) or (now - timedelta(days=1))
+    until = parse_utc_naive(payload.get("until")) or (now + timedelta(days=1))
     return issue_ticket_response(
         container.get("stream_tickets"),
         trace_id=trace_id,
@@ -223,14 +224,3 @@ def _heartbeat(kind: str) -> str:
     """SSE 心跳帧（``event: heartbeat``，不带 ``id``，不参与 seq 连续性）。"""
     payload = json.dumps({"kind": kind, "ts_ms": int(datetime.now(UTC).timestamp() * 1000)})
     return f"event: heartbeat\ndata: {payload}\n\n"
-
-
-def _parse_time(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            return datetime.fromisoformat(value).replace(tzinfo=None)
-        except ValueError:
-            return None
-    return None

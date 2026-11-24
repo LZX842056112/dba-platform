@@ -18,7 +18,6 @@ from dba.util.time import utcnow_naive
 __all__ = [
     "naive_now",
     "parse_date",
-    "parse_dt",
     "period_bounds",
     "active_biz_lines",
 ]
@@ -42,18 +41,6 @@ def parse_date(value: Any) -> date | None:
         return value
     try:
         return datetime.fromisoformat(str(value)).date()
-    except ValueError:
-        return None
-
-
-def parse_dt(value: Any) -> datetime | None:
-    """把 ``str``/``datetime`` 解析为 UTC naive ``datetime``；无法解析返回 ``None``。"""
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
-    try:
-        return datetime.fromisoformat(str(value)).replace(tzinfo=None)
     except ValueError:
         return None
 

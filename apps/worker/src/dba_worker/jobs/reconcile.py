@@ -25,7 +25,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from dba.util.time import parse_utc_naive
 
 from ._common import period_bounds
 
@@ -47,6 +47,8 @@ async def _detail_sum(container: Any, start: datetime, end: datetime) -> int:
     mysql = container.get("mysql")
     if mysql is None:
         return 0
+    from sqlalchemy import func, select  # noqa: PLC0415
+
     from dba.storage.mysql import models as m  # noqa: PLC0415 - 惰性导入，避免耦合可选驱动
 
     engine = mysql.rw_engine
@@ -69,6 +71,8 @@ async def _enabled_budgets(container: Any) -> list[dict[str, Any]]:
     mysql = container.get("mysql")
     if mysql is None:
         return []
+    from sqlalchemy import select  # noqa: PLC0415
+
     from dba.storage.mysql import models as m  # noqa: PLC0415
 
     engine = mysql.rw_engine
@@ -133,8 +137,7 @@ async def run_reconcile(
         except Exception as exc:  # noqa: BLE001
             logger.warning("回收过期预留失败（继续对账）：%s", exc)
 
-    parsed_anchor = _parse_anchor(anchor)
-    start, end = period_bounds(period, parsed_anchor)
+    start, end = period_bounds(period, parse_utc_naive(anchor))
     period_start_iso = start.date().isoformat()
 
     detail_total = await _detail_sum(container, start, end)
@@ -226,13 +229,3 @@ async def run_reconcile(
         "budgets": rows,
         "alert_id": alert_id,
     }
-
-
-def _parse_anchor(anchor: str | None) -> datetime | None:
-    """把 ``anchor``（ISO 字符串）解析为 UTC naive ``datetime``。"""
-    if not anchor:
-        return None
-    try:
-        return datetime.fromisoformat(anchor).replace(tzinfo=None)
-    except ValueError:
-        return None

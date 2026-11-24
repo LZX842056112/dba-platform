@@ -43,7 +43,6 @@ def register_chatbi_agents(
     router: Any,
     semantic: Any,
     scope_compiler: Any,
-    chain: Any,
     executor: Any,
     spec_builder: Any,
     memory: Any | None = None,
@@ -70,7 +69,7 @@ def register_chatbi_agents(
     registry.register(
         "sql_gen", cast("Agent", SqlGeneratorAgent(router, memory=memory, skill=skill))
     )
-    registry.register("sql_guard", cast("Agent", SqlGuardAgent(chain)))
+    registry.register("sql_guard", cast("Agent", SqlGuardAgent(executor)))
     registry.register("sql_exec", cast("Agent", SqlExecAgent(executor)))
     registry.register("visual", cast("Agent", VisualAgent(router, spec_builder, skill=skill)))
     registry.register("narrator", cast("Agent", NarratorAgent(router)))

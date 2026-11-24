@@ -20,8 +20,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
-
 from ._common import naive_now
 
 __all__ = ["run_archive"]
@@ -58,6 +56,8 @@ async def run_archive(
     if repos is None or mysql is None:
         logger.warning("归档跳过：MySQL 未装配")
         return {"ok": False, "reason": "storage_unavailable"}
+
+    from sqlalchemy import delete, select  # noqa: PLC0415
 
     from dba.storage.mysql import models as m  # noqa: PLC0415 - 惰性导入
 

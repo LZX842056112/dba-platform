@@ -55,6 +55,7 @@ __all__ = [
     "flush_queue",
     "traced",
     "metered",
+    "meter_llm_call",
     "dropped_total",
     "queue_depth",
     "is_bound",
@@ -345,74 +346,83 @@ def metered(kind: Literal["llm", "tool", "search"]) -> AsyncDecorator:
         @wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             c = ctx()
-            started = time.perf_counter()
-            result: Any = None
-            status: Literal["ok", "error", "timeout"] = "ok"
-            err: BaseException | None = None
-            try:
-                result = await fn(*args, **kwargs)
+            if kind == "llm":
+                result, _ = await meter_llm_call(fn(*args, **kwargs), c)
                 return result
-            except TimeoutError as exc:
-                status, err = "timeout", exc
-                raise
-            except Exception as exc:  # noqa: BLE001
-                status, err = "error", exc
+
+            started = time.perf_counter()
+            status: _ToolStatus = "ok"
+            try:
+                return await fn(*args, **kwargs)
+            except Exception:
+                status = "error"
                 raise
             finally:
-                elapsed = int((time.perf_counter() - started) * 1000)
-                usage: dict[str, Any] = {}
-                if result is not None and hasattr(result, "usage_dict"):
-                    usage = dict(result.usage_dict())
-                elif err is not None:
-                    usage = dict(getattr(err, "partial_usage", {}) or {})
-                if kind == "llm":
-                    enqueue("llm", _build_llm_record(c, usage, elapsed, status, err, result))
-                else:
-                    enqueue(
-                        "tool",
-                        {
-                            "trace_id": c.trace_id,
-                            "span_id": c.span_id,
-                            "biz_line_id": c.biz_line_id,
-                            "agent_uid": c.agent_uid,
-                            "tool_name": kwargs.get("tool_name") or getattr(fn, "__name__", kind),
-                            "status": "ok" if status == "ok" else "error",
-                            "latency_ms": elapsed,
-                        },
-                    )
+                enqueue(
+                    "tool",
+                    {
+                        "trace_id": c.trace_id,
+                        "span_id": c.span_id,
+                        "biz_line_id": c.biz_line_id,
+                        "agent_uid": c.agent_uid,
+                        "tool_name": kwargs.get("tool_name") or getattr(fn, "__name__", kind),
+                        "status": status,
+                        "latency_ms": int((time.perf_counter() - started) * 1000),
+                    },
+                )
 
         return wrapper
 
     return decorator
 
 
-def _build_llm_record(
-    c: RunContext,
-    usage: dict[str, Any],
-    elapsed: int,
-    status: Literal["ok", "error", "timeout"],
-    err: BaseException | None,
-    result: Any,
-) -> LLMCallRecord:
-    """由 usage dict 构造 ``LLMCallRecord``（★ U6：装饰器内构造 record 再交给 L4 normalize）。"""
-    rec = cast(
-        "LLMCallRecord",
-        {
-            # usage 展开：model / prompt_tokens / completion_tokens / cached_tokens /
-            # ttft_ms / usage_source
-            **usage,
-            "trace_id": c.trace_id,
-            "span_id": c.span_id,
-            "biz_line_id": c.biz_line_id,
-            "agent_uid": c.agent_uid,
-            "provider": usage.get("provider") or getattr(result, "provider", None) or "",
-            "latency_ms": elapsed,
-            "status": status,  # ★ P0-2：NOT NULL，必须给
-            "usage_source": usage.get("usage_source", "measured"),
-            "error_code": classify(err)[0] if err is not None else None,
-        },
-    )
-    cost = _COST.normalize(rec) if _COST is not None else NormalizedCost.unknown()
-    rec["cost_micro_usd"] = cost.total_micro_usd
-    rec["price_book_id"] = cost.price_book_id
-    return rec
+async def meter_llm_call[T](
+    call: Awaitable[T],
+    context: RunContext,
+    *,
+    cost: CostNormalizerProto | None = None,
+    fallback_provider: str = "",
+) -> tuple[T, NormalizedCost]:
+    """记录一次 LLM 调用，并返回同一计价结果供预算结算。"""
+    started = time.perf_counter()
+    result: T | None = None
+    status: _LLMStatus = "ok"
+    err: BaseException | None = None
+    try:
+        result = await call
+    except TimeoutError as exc:
+        status, err = "timeout", exc
+        raise
+    except (Exception, asyncio.CancelledError) as exc:
+        status, err = "error", exc
+        raise
+    finally:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        usage: dict[str, Any] = {}
+        usage_dict = getattr(result, "usage_dict", None)
+        if usage_dict is not None:
+            usage = dict(usage_dict())
+        elif err is not None:
+            usage = dict(getattr(err, "partial_usage", {}) or {})
+        provider = usage.get("provider") or getattr(result, "provider", None)
+        rec = cast(
+            "LLMCallRecord",
+            {
+                **usage,
+                "trace_id": context.trace_id,
+                "span_id": context.span_id,
+                "biz_line_id": context.biz_line_id,
+                "agent_uid": context.agent_uid,
+                "provider": provider or (fallback_provider if result is not None else ""),
+                "latency_ms": elapsed,
+                "status": status,
+                "usage_source": usage.get("usage_source", "measured"),
+                "error_code": classify(err)[0] if err is not None else None,
+            },
+        )
+        normalizer = cost if cost is not None else _COST
+        normalized = normalizer.normalize(rec) if normalizer is not None else NormalizedCost.unknown()
+        rec["cost_micro_usd"] = normalized.total_micro_usd
+        rec["price_book_id"] = normalized.price_book_id
+        enqueue("llm", rec)
+    return cast("T", result), normalized

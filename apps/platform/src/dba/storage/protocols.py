@@ -112,7 +112,7 @@ class UserRoleRepo(_Owned, Protocol):
 
     owner: ClassVar[str] = "capabilities.semantics"
 
-    async def grant(self, user_id: int, role_id: int) -> None: ...
+    async def grant_many(self, user_id: int, role_ids: list[int]) -> None: ...
 
 
 @runtime_checkable

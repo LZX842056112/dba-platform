@@ -17,8 +17,9 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from dba.api.deps import Principal, get_container, get_current_principal, require_roles
-from dba.api.v1._common import parse_ts, parse_window, service_or_default, storage_or_default
+from dba.api.v1._common import parse_window, service_or_default, storage_or_default
 from dba.di import Container
+from dba.util.time import parse_utc_naive
 
 __all__ = ["router"]
 
@@ -95,13 +96,17 @@ async def top_spenders(
     dimension: Annotated[str, Query()] = "model",
     period: Annotated[str, Query()] = "MONTH",
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
+    from_: Annotated[str | None, Query(alias="from")] = None,
+    to: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """``GET /finops/cost/top-spenders``。"""
     service = service_or_default(container, "finops_service", None)
     if service is None:
         return []
+    days = {"DAY": 1, "WEEK": 7}.get(period.upper(), 30)
+    since, until = parse_window(from_, to, span=timedelta(days=days))
     result: list[dict[str, Any]] = await service.top_spenders(
-        dimension=dimension, period=period, limit=limit
+        dimension=dimension, since=since, until=until, limit=limit
     )
     return result
 
@@ -319,8 +324,8 @@ async def recompute_cost(
 ) -> dict[str, Any]:
     """``POST /finops/cost/recompute``（admin）：价格修正后重算历史成本。"""
     bundle = container.get("finops")
-    start = parse_ts(payload.get("start"))
-    end = parse_ts(payload.get("end"))
+    start = parse_utc_naive(payload.get("start"))
+    end = parse_utc_naive(payload.get("end"))
     if bundle is None or start is None or end is None:
         return {"job_id": None, "note": "缺少 start/end 或 finops 未装配"}
     report = await bundle.attributor.recompute(start.date(), end.date())

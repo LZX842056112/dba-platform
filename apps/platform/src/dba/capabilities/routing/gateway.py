@@ -14,26 +14,29 @@
 ② ``BudgetGuard.reserve``（Redis Lua 原子预留，落到 MySQL 权威账本）
 ③ 若决策为 ``soft`` → 走降级（``with_downgrade`` 语义由调用方持有；此处记录事件）
 ④ 调用 SDK；失败 / 超时 / 取消都要走 ``except``
-⑤ ``CostNormalizer.normalize`` + ``MeteringService.record_llm``（经 outbox，由 ``@metered`` 完成）
+⑤ ``meter_llm_call`` 计价并写入计量队列
 ⑥ ``BudgetGuard.settle``（幂等）
 ⑦ 失败路径：``BudgetGuard.release``（幂等）
 
-★ ``@metered("llm")`` 负责 ⑤：它用**全局绑定**的成本归一化器（``bind_metering`` 时注入），
-  因此 P0-3（计费输入 = prompt − cached）在此路径上自动生效。
+计量和预算结算使用同一次调用的计价结果。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
-from dba_runtime.context import RunContext
+from dba_runtime.context import RunContext, ctx_or_none
 from dba_runtime.errors import BudgetExceededError
 from dba_runtime.router import LLMResult, ModelChoice
-from dba_runtime.telemetry import NormalizedCost, metered
+from dba_runtime.telemetry import CostNormalizerProto, meter_llm_call
 
 from .router import ModelRouter, RouteStrategy
+
+if TYPE_CHECKING:
+    from dba_runtime.llm.base import LLMClient
 
 __all__ = ["ModelGateway", "DEFAULT_TASK_STRATEGY"]
 
@@ -63,9 +66,9 @@ class ModelGateway:
         self,
         *,
         router: ModelRouter,
-        llm: Any,
+        llm: LLMClient,
         budget: Any | None = None,
-        cost: Any | None = None,
+        cost: CostNormalizerProto | None = None,
         task_strategy: dict[str, RouteStrategy] | None = None,
         budget_period: str = "MONTH",
         default_timeout_s: float = 60.0,
@@ -110,20 +113,6 @@ class ModelGateway:
         )
 
     # ── 调用（含预算 + 计量）───────────────────────────────────────
-    @metered("llm")
-    async def _complete(
-        self, messages: list[dict[str, Any]], choice: ModelChoice, ctx: RunContext
-    ) -> LLMResult:
-        """真正发起一次 LLM 调用；``@metered("llm")`` 装饰器负责写成本 / token 埋点。
-
-        ★ 计费的「输入 token = prompt − cached」修正由全局成本归一化器在 ``@metered``
-          内部完成（P0-3），此处不重复处理。
-        """
-        _ = ctx
-        return cast(
-            "LLMResult", await self._llm.complete(messages, choice, timeout_s=self._timeout_s)
-        )
-
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -131,16 +120,21 @@ class ModelGateway:
         ctx: RunContext,
         **kwargs: Any,
     ) -> LLMResult:
-        """调用 LLM：预留 → 调用 → 结算 / 释放（计量由 ``@metered`` 完成）。"""
+        """预留预算，调用 LLM 并计量，再结算或释放预留。"""
         _ = kwargs
         hold = await self._reserve(ctx, choice)
         try:
-            result = await self._complete(messages, choice, ctx)
-        except Exception:
+            result, cost = await meter_llm_call(
+                self._llm.complete(messages, choice, timeout_s=self._timeout_s),
+                ctx_or_none() or ctx,
+                cost=self._cost,
+                fallback_provider=choice.provider,
+            )
+        except (Exception, asyncio.CancelledError):
             await self._release(hold)
             raise
-        await self._settle(hold, result, choice)
-        return cast("LLMResult", result)
+        await self._settle(hold, result, cost.total_micro_usd)
+        return result
 
     def stream(
         self,
@@ -156,7 +150,7 @@ class ModelGateway:
         流式调用的成本由供应商账单在 ``reconcile`` 中回填。
         """
         _ = ctx, kwargs
-        return cast("AsyncIterator[str]", self._llm.stream(messages, choice))
+        return self._llm.stream(messages, choice)
 
     # ── 预算三段式 ────────────────────────────────────────────────
     async def _reserve(self, ctx: RunContext, choice: ModelChoice) -> Any | None:
@@ -187,11 +181,16 @@ class ModelGateway:
             raise BudgetExceededError(
                 "预算硬上限阻断本次调用", code="42901", detail=decision.as_dict
             )
+        hold = (budget, decision.reservation_id)
         if decision.decision == "soft":
-            await self._emit(ctx, "budget.warning", decision.as_dict)
-        return (budget, decision.reservation_id)
+            try:
+                await self._emit(ctx, "budget.warning", decision.as_dict)
+            except (Exception, asyncio.CancelledError):
+                await self._release(hold)
+                raise
+        return hold
 
-    async def _settle(self, hold: Any | None, result: LLMResult, choice: ModelChoice) -> None:
+    async def _settle(self, hold: Any | None, result: LLMResult, actual_micro_usd: int) -> None:
         """结算预算：把预留换成**实际花费**（``reserved -= 预估``、``consumed += 实际``）。
 
         注意：结算失败**不阻断**主链路——权威账本由 worker 对账兜底，不把计量失败
@@ -202,12 +201,11 @@ class ModelGateway:
         budget, reservation_id = hold
         if reservation_id is None:
             return
-        actual = self._cost_of(result, choice)
         try:
             await self._budget.settle(
                 budget,
                 reservation_id=reservation_id,
-                actual_micro_usd=actual,
+                actual_micro_usd=actual_micro_usd,
                 usage_source=result.usage_source,
             )
         except Exception:  # noqa: BLE001 - 结算失败不阻断主链路（权威账本由对账兜底）
@@ -245,26 +243,6 @@ class ModelGateway:
         if not scopes:
             return None
         return await budget.resolve_chain(scopes, self._budget_period)
-
-    def _cost_of(self, result: LLMResult, choice: ModelChoice) -> int:
-        """把一次调用结果归一化为 micro_usd 整数成本（无价格表时返回 0）。
-
-        ★ 这里的 0 是「未计价」而非「免费」：``CostNormalizer`` 会标 ``unknown``，
-          覆盖率看板据此暴露「有多少调用没价可查」，不会把未知静默当 0 计入总和。
-        """
-        if self._cost is None:
-            return 0
-        cost: NormalizedCost = self._cost.normalize(
-            {
-                "model": choice.model,
-                "provider": choice.provider,
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "cached_tokens": result.cached_tokens,
-                "usage_source": result.usage_source,
-            }
-        )
-        return cost.total_micro_usd
 
     @staticmethod
     async def _emit(ctx: RunContext, event: Any, data: dict[str, Any]) -> None:
