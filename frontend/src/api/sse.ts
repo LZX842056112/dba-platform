@@ -12,19 +12,16 @@
 // 信封的 `event` / `seq` 由 SSE 的 `event:` 名与 `id:` 还原，`trace_id` 由调用方已知，
 // `ts` 用浏览器接收时刻（墙钟）。见 §9.3 的「统一信封」。
 //
-// 重连耗尽后**降级为一次性拉取终态**（GET /chat/runs/{trace_id}），
-// 避免用户永远停在「进行中」。
+// 重连耗尽或换票失败时通知调用方结束本地运行，避免输入一直锁定。
 
 import type { EventEnvelope, EventType } from '../types/events';
 import { isTerminal } from '../types/events';
 import type { ReplayGapData } from '../types/events';
-import { getRunDoc } from '../features/chat/api/chatApi';
 import { renewStreamTicket } from '../features/chat/api/chatApi';
 
 export interface RunStreamHandlers {
   onEvent: (event: EventEnvelope) => void;
-  /** 重连耗尽后的降级：一次性取回终态。 */
-  onSnapshot: (snapshot: unknown) => void;
+  onConnectionFailure: () => void;
   onOpen?: () => void;
   onError?: () => void;
   onReplayGap?: (gap: ReplayGapData) => void;
@@ -87,20 +84,32 @@ export function openRunStream(
   let lastSeq = 0;
   let retryTimer: number | null = null;
 
-  const loadSnapshot = (): void => {
+  const close = (): void => {
     closedByUs = true;
-    void getRunDoc(traceId)
-      .then(handlers.onSnapshot)
-      .catch(() => handlers.onSnapshot({}));
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    const source = es;
+    es = null;
+    source?.close();
+  };
+
+  const reportConnectionFailure = (): void => {
+    if (closedByUs) return;
+    close();
+    handlers.onConnectionFailure();
   };
 
   const connect = (currentTicket: string): void => {
     // ★ 不传 JWT（EventSource 不支持自定义请求头），改用一次性 ticket
     const cursor = lastSeq > 0 ? `&last_event_id=${lastSeq}` : '';
     const url = `${baseUrl()}/stream/runs/${encodeURIComponent(traceId)}?ticket=${encodeURIComponent(currentTicket)}${cursor}`;
-    es = new EventSource(url);
+    const source = new EventSource(url);
+    es = source;
 
-    es.onopen = () => {
+    source.onopen = () => {
+      if (es !== source) return;
       retry = 0;
       handlers.onOpen?.();
     };
@@ -108,6 +117,7 @@ export function openRunStream(
     const makeHandler =
       (name: EventType) =>
       (message: MessageEvent<string>): void => {
+        if (es !== source) return;
         const parsedSeq = Number(message.lastEventId);
         // 心跳帧不带 `id:`，per SSE 规范 lastEventId 会沿用上一个 id；
         // 由 runStore 的 `seq <= lastSeq` 幂等判定自然丢弃，这里无需特殊处理。
@@ -121,16 +131,14 @@ export function openRunStream(
         };
         lastSeq = Math.max(lastSeq, seq);
         if (name !== 'heartbeat') handlers.onEvent(env);
-        if (isTerminal(name)) {
-          closedByUs = true;
-          es?.close();
-        }
+        if (isTerminal(name)) close();
       };
 
     // ★ 关键：命名事件必须逐个注册监听器
     for (const name of NAMED_EVENTS) {
       if (name === 'replay.gap') {
-        es.addEventListener(name, ((message: MessageEvent<string>) => {
+        source.addEventListener(name, ((message: MessageEvent<string>) => {
+          if (es !== source) return;
           const parsed = parseData(message.data);
           const oldest = parsed.oldest_available_seq;
           const latest = parsed.latest_seq;
@@ -152,11 +160,12 @@ export function openRunStream(
           handlers.onReplayGap?.(data);
         }) as EventListener);
       } else {
-        es.addEventListener(name, makeHandler(name) as EventListener);
+        source.addEventListener(name, makeHandler(name) as EventListener);
       }
     }
     // 兜底：后端若以默认 message 事件推送，也能收到（按未命名处理，仅推进水位）
-    es.onmessage = (message: MessageEvent<string>) => {
+    source.onmessage = (message: MessageEvent<string>) => {
+      if (es !== source) return;
       const env: EventEnvelope = {
         event: 'heartbeat',
         seq: lastSeq,
@@ -167,30 +176,29 @@ export function openRunStream(
       handlers.onEvent(env);
     };
 
-    es.onerror = () => {
+    source.onerror = () => {
+      if (es !== source) return;
+      es = null;
+      source.close();
       handlers.onError?.();
-      es?.close();
       if (closedByUs) return;
-      if (retry >= MAX_RETRY) return loadSnapshot();
+      if (retry >= MAX_RETRY) return reportConnectionFailure();
       retry += 1;
       const delay = Math.min(1000 * 2 ** retry, 15000);
       retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        if (closedByUs) return;
         // 新建 EventSource 不会继承旧实例的 Last-Event-ID；显式传水位并换新 ticket。
         void renewStreamTicket(traceId)
           .then(({ stream_ticket }) => {
             if (!closedByUs) connect(stream_ticket);
           })
-          .catch(loadSnapshot);
+          .catch(reportConnectionFailure);
       }, delay);
     };
   };
 
   connect(ticket);
 
-  return () => {
-    closedByUs = true;
-    if (retryTimer !== null) window.clearTimeout(retryTimer);
-    es?.close();
-    es = null;
-  };
+  return close;
 }

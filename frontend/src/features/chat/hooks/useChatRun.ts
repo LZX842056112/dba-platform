@@ -3,7 +3,7 @@
 // 负责把 §9.3 的事件流接进 runStore，并处理：
 //   * 懒建会话（首次提问时 POST /chat/sessions）；
 //   * P0-7：先拿 ticket 再开 EventSource；
-//   * 重连耗尽 → 用 run 快照兜底（避免永久停在「进行中」）。
+//   * 重连耗尽或换票失败时结束本地运行。
 
 import { useMutation } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -46,7 +46,7 @@ export function useChatRun(): UseChatRun {
       reset();
     },
     onSuccess: (result) => {
-      // POST 只负责创建 Run；SSE 完成前输入仍需锁定，任意终态或快照回退时再恢复。
+      // 收到运行终态或确认连接失败后解锁输入。
       setStreaming(true);
       closeStreamRef.current = openRunStream(result.trace_id, result.stream_ticket, {
         onEvent: (event) => {
@@ -79,9 +79,7 @@ export function useChatRun(): UseChatRun {
             },
           );
         },
-        // 重连耗尽的兜底：run_doc 快照（§9.3 断线重连降级）
-        onSnapshot: () => {
-          // run_doc 不含运行终态；重连耗尽时显式结束本地运行，防止输入永久锁定。
+        onConnectionFailure: () => {
           const current = useRunStore.getState();
           if (current.status === 'running') {
             apply({

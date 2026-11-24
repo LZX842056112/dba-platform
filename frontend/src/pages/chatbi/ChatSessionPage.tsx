@@ -1,6 +1,7 @@
 // 对话页（最小主链路）：输入 → SSE 流 → 进度/自愈提示 → 逐面板出图。
 // 对齐《设计方案 v2》§9.1 页面落位与 §9.3 事件渲染。
 
+import { useMemo } from 'react';
 import { CockpitFrame } from '../../features/dashboard/components/CockpitFrame';
 import { DashboardGrid } from '../../features/dashboard/components/DashboardGrid';
 import { NarrationPanel } from '../../features/chat/components/NarrationPanel';
@@ -30,9 +31,12 @@ export function ChatSessionPage() {
   const { start, busy } = useChatRun();
   useDashboardHydration();
 
-  const ordered = panelOrder
-    .map((id) => panels[id])
-    .filter((panel): panel is NonNullable<typeof panel> => Boolean(panel));
+  const ordered = useMemo(
+    () => panelOrder
+      .map((id) => panels[id])
+      .filter((panel): panel is NonNullable<typeof panel> => Boolean(panel)),
+    [panelOrder, panels],
+  );
 
   return (
     <div className="chat-session">

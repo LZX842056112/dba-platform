@@ -5,11 +5,10 @@
 //   button[type=submit] / .hint--error
 
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { loginRequest } from '../../api/auth';
-import { ApiError } from '../../api/client';
-import { login } from '../../app/providers/AuthProvider';
+import { ApiError, setAuthToken } from '../../api/client';
 
 export function LoginPage() {
   const [username, setUsername] = useState('admin');
@@ -17,6 +16,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const [params] = useSearchParams();
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -24,7 +24,7 @@ export function LoginPage() {
     setError(null);
     try {
       const result = await loginRequest(username, password);
-      login(result.access_token);
+      setAuthToken(result.access_token);
       navigate('/', { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '登录失败，请稍后重试');
@@ -57,6 +57,7 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          {error === null && params.get('expired') === '1' && <div className="hint">登录已过期，请重新登录。</div>}
           {error !== null && <div className="hint hint--error">{error}</div>}
           <button type="submit" disabled={busy}>
             {busy ? '登录中…' : '登录'}

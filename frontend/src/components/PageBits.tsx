@@ -2,6 +2,19 @@
 
 import type { ReactNode } from 'react';
 
+export function ReportingWindow({ hours, onChange }: { hours: number; onChange: (hours: number) => void }) {
+  return (
+    <label className="reporting-window">
+      统计区间
+      <select value={hours} onChange={(event) => onChange(Number(event.target.value))}>
+        <option value={24}>近 24 小时</option>
+        <option value={30 * 24}>近 30 天</option>
+        <option value={90 * 24}>近 90 天</option>
+      </select>
+    </label>
+  );
+}
+
 /** 页面区块壳（统一标题 + 内容，复用现有 .panel/.panel-title 样式）。 */
 export function PagePanel({ title, children }: { title: string; children: ReactNode }) {
   return (
